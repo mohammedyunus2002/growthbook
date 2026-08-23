@@ -5,7 +5,6 @@ import {
   ReportInterface,
 } from "shared/types/report";
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { Box } from "@radix-ui/themes";
 import { getValidDate, ago, datetime, date } from "shared/dates";
@@ -14,6 +13,8 @@ import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { IdeaInterface } from "shared/types/idea";
 import { VisualChangesetInterface } from "shared/types/visual-changeset";
 import { getAllMetricIdsFromExperiment } from "shared/experiments";
+import { SignificanceThresholds } from "shared/types/stats";
+import Link from "@/ui/Link";
 import LoadingOverlay from "@/components/LoadingOverlay";
 import Markdown from "@/components/Markdown/Markdown";
 import useApi from "@/hooks/useApi";
@@ -34,11 +35,13 @@ import ResultMoreMenu from "@/components/Experiment/ResultMoreMenu";
 import Switch from "@/ui/Switch";
 import Field from "@/components/Forms/Field";
 import MarkdownInput from "@/components/Markdown/MarkdownInput";
-import Modal from "@/components/Modal";
+import ModalStandard from "@/ui/Modal/Patterns/ModalStandard";
 import { useUser } from "@/services/UserContext";
 import VariationIdWarning from "@/components/Experiment/VariationIdWarning";
 import DeleteButton from "@/components/DeleteButton/DeleteButton";
 import useOrgSettings from "@/hooks/useOrgSettings";
+import useConfidenceLevels from "@/hooks/useConfidenceLevels";
+import usePValueThreshold from "@/hooks/usePValueThreshold";
 import { trackReport } from "@/services/track";
 import CompactResults from "@/components/Experiment/CompactResults";
 import BreakDownResults from "@/components/Experiment/BreakDownResults";
@@ -48,6 +51,8 @@ import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 import DifferenceTypeChooser from "@/components/Experiment/DifferenceTypeChooser";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/ui/Tabs";
 import useURLHash from "@/hooks/useURLHash";
+import Text from "@/ui/Text";
+import Callout from "@/ui/Callout";
 
 export default function LegacyReportPage({
   report,
@@ -94,6 +99,17 @@ export default function LegacyReportPage({
   const orgSettings = useOrgSettings();
   const pValueCorrection = orgSettings?.pValueCorrection;
 
+  const bayesianConfidenceLevels = useConfidenceLevels(
+    experimentData?.experiment?.project,
+  );
+  const pValueThreshold = usePValueThreshold(
+    experimentData?.experiment?.project,
+  );
+  const significanceThresholds: SignificanceThresholds = {
+    bayesianConfidenceLevels,
+    pValueThreshold,
+  };
+
   const hasSequentialTestingFeature =
     hasCommercialFeature("sequential-testing");
 
@@ -121,7 +137,7 @@ export default function LegacyReportPage({
     return <LoadingOverlay />;
   }
   if (error) {
-    return <div className="alert alert-danger">{error.message}</div>;
+    return <Callout status="error">{error.message}</Callout>;
   }
   if (!report || report.type !== "experiment") {
     return null;
@@ -167,7 +183,7 @@ export default function LegacyReportPage({
       />
       <div className="container-fluid pagecontents experiment-details">
         {editModalOpen && (
-          <Modal
+          <ModalStandard
             trackingEventModalType=""
             open={true}
             submit={form.handleSubmit(async (value) => {
@@ -181,11 +197,12 @@ export default function LegacyReportPage({
               setEditModalOpen(false);
             }}
             header="Edit Report"
-            overflowAuto={false}
           >
-            <Field label="Title" {...form.register("title")} />
+            <Field size="legacy" label="Title" {...form.register("title")} />
             <div className="form-group">
-              <label>Description</label>
+              <Text as="label" weight="semibold">
+                Description
+              </Text>
               <MarkdownInput
                 setValue={(value) => {
                   form.setValue("description", value);
@@ -203,7 +220,7 @@ export default function LegacyReportPage({
                 form.setValue("status", newStatus);
               }}
             />
-          </Modal>
+          </ModalStandard>
         )}
         <div className="mb-3">
           {report?.experimentId && (
@@ -215,6 +232,7 @@ export default function LegacyReportPage({
           {canDeleteReport &&
             (userId === report?.userId || !report?.userId) && (
               <DeleteButton
+                useRadix={false}
                 displayName="Custom Report"
                 link={false}
                 className="float-right btn-sm"
@@ -371,6 +389,7 @@ export default function LegacyReportPage({
                         }}
                       >
                         <RunQueriesButton
+                          useRadixButton={false}
                           icon="refresh"
                           cta="Refresh Data"
                           mutate={mutate}
@@ -413,8 +432,8 @@ export default function LegacyReportPage({
                       }
                       notebookUrl={`/report/${report.id}/notebook`}
                       notebookFilename={report.title}
-                      queries={report.queries}
-                      queryError={report.error}
+                      legacyQueries={report.queries}
+                      legacyQueryError={report.error}
                       results={report.results?.dimensions}
                       variations={variations}
                       metrics={getAllMetricIdsFromExperiment(
@@ -429,26 +448,26 @@ export default function LegacyReportPage({
                   </div>
                 </div>
                 {report.error ? (
-                  <div className="alert alert-danger">
+                  <Callout status="error">
                     <strong>Error generating the report: </strong>{" "}
                     {report.error}
-                  </div>
+                  </Callout>
                 ) : null}
                 {refreshError && (
-                  <div className="alert alert-danger">
+                  <Callout status="error">
                     <strong>Error refreshing data: </strong> {refreshError}
-                  </div>
+                  </Callout>
                 )}
                 {!hasMetrics && (
-                  <div className="alert alert-info">
+                  <Callout status="info">
                     Add at least 1 metric to view results.
-                  </div>
+                  </Callout>
                 )}
                 {!hasData &&
                   !report.results?.unknownVariations?.length &&
                   queryStatusData.status !== "running" &&
                   hasMetrics && (
-                    <div className="alert alert-info">
+                    <Callout status="info">
                       No data yet.{" "}
                       {report.results &&
                         phaseAgeMinutes >= 120 &&
@@ -461,13 +480,14 @@ export default function LegacyReportPage({
                       {!report.results &&
                         canUpdateReport &&
                         `Click the "Refresh" button.`}
-                    </div>
+                    </Callout>
                   )}
               </div>
               {hasData &&
                 report.args.dimension &&
                 (report.args.dimension.substring(0, 8) === "pre:date" ? (
                   <DateResults
+                    significanceThresholds={significanceThresholds}
                     goalMetrics={report.args.goalMetrics}
                     secondaryMetrics={report.args.secondaryMetrics}
                     guardrailMetrics={report.args.guardrailMetrics}
@@ -480,6 +500,7 @@ export default function LegacyReportPage({
                 ) : (
                   <BreakDownResults
                     experimentId={report.experimentId ?? ""}
+                    significanceThresholds={significanceThresholds}
                     isLatestPhase={true}
                     phase={
                       (experimentData?.experiment?.phases?.length ?? 1) - 1
@@ -554,6 +575,7 @@ export default function LegacyReportPage({
                   <div className="mt-0 mb-3">
                     <CompactResults
                       experimentId={report.experimentId ?? ""}
+                      significanceThresholds={significanceThresholds}
                       variations={variations}
                       multipleExposures={report.results?.multipleExposures || 0}
                       results={report.results?.dimensions?.[0]}
@@ -583,7 +605,6 @@ export default function LegacyReportPage({
                       sequentialTestingEnabled={sequentialTestingEnabled}
                       differenceType={differenceType}
                       isTabActive={true}
-                      disableTimeSeriesButton={true}
                     />
                   </div>
                 )}

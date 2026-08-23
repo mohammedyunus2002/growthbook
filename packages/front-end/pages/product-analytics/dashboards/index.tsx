@@ -19,6 +19,7 @@ import Field from "@/components/Forms/Field";
 import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import Button from "@/ui/Button";
+import Callout from "@/ui/Callout";
 import DashboardModal from "@/enterprise/components/Dashboards/DashboardModal";
 import DashboardShareModal from "@/enterprise/components/Dashboards/DashboardShareModal";
 import {
@@ -31,7 +32,7 @@ import DashboardWorkspace from "@/enterprise/components/Dashboards/DashboardWork
 import { DocLink } from "@/components/DocLink";
 import EmptyState from "@/components/EmptyState";
 import ProjectBadges from "@/components/ProjectBadges";
-import UserAvatar from "@/components/Avatar/UserAvatar";
+import Owner from "@/components/Avatar/Owner";
 import { useUser } from "@/services/UserContext";
 import {
   DropdownMenu,
@@ -45,7 +46,7 @@ import LinkButton from "@/ui/LinkButton";
 
 export default function DashboardsPage() {
   const permissionsUtil = usePermissionsUtil();
-  const { getUserDisplay, hasCommercialFeature, userId } = useUser();
+  const { hasCommercialFeature, userId } = useUser();
   const { project } = useDefinitions();
   const { apiCall } = useAuth();
   const [saving, setSaving] = useState(false);
@@ -63,6 +64,7 @@ export default function DashboardsPage() {
   const [showDuplicateModal, setShowDuplicateModal] = useState<
     DashboardInterface | undefined
   >(undefined);
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [_blocks, setBlocks] = useState<
     DashboardBlockInterfaceOrData<DashboardBlockInterface>[]
   >([]);
@@ -140,8 +142,10 @@ export default function DashboardsPage() {
         mutateDashboards();
         setDashboardId(res.dashboard.id);
         setBlocks(res.dashboard.blocks);
+        return { dashboardId: res.dashboard.id };
       } else {
         console.error(res);
+        throw new Error("Failed to save dashboard");
       }
     },
     [apiCall, mutateDashboards],
@@ -249,7 +253,6 @@ export default function DashboardsPage() {
         <Flex justify="between" align="center">
           <Flex align="center">
             <h1>Product Analytics Dashboards</h1>
-            <span className="badge badge-purple text-uppercase ml-2">Beta</span>
           </Flex>
           {filteredDashboards.length ? (
             <LinkButton
@@ -274,6 +277,7 @@ export default function DashboardsPage() {
                 description="Turn your data and metrics into actionable product insights, share with your team, and make smarter decisions about what to build next."
                 leftButton={
                   <Button
+                    disabled={!canCreate}
                     onClick={() =>
                       router.push("/product-analytics/dashboards/new")
                     }
@@ -290,15 +294,15 @@ export default function DashboardsPage() {
             <p>
               Create curated dashboards to visualize key metrics and track
               performance.{" "}
-              <DocLink docSection="productAnalytics" useRadix={true}>
+              <DocLink docSection="productAnalytics">
                 View Docs <FaArrowRight size={10} />
               </DocLink>
             </p>
 
             {error ? (
-              <div className="alert alert-danger">
+              <Callout status="error">
                 There was an error loading the list of dashboards.
-              </div>
+              </Callout>
             ) : (
               <>
                 <Flex
@@ -310,6 +314,7 @@ export default function DashboardsPage() {
                 >
                   <Box flexBasis="300px" flexShrink="0">
                     <Field
+                      size="legacy"
                       placeholder="Search..."
                       type="search"
                       {...searchInputProps}
@@ -338,7 +343,6 @@ export default function DashboardsPage() {
                           const isOwner = d.userId === userId;
                           const isAdmin =
                             permissionsUtil.canManageOrgSettings();
-                          const ownerName = getUserDisplay(d.userId);
                           let canEdit =
                             permissionsUtil.canUpdateGeneralDashboards(d, {});
                           let canDelete =
@@ -406,18 +410,7 @@ export default function DashboardsPage() {
                                 )}
                               </td>
                               <td>
-                                <>
-                                  {ownerName !== "" && (
-                                    <UserAvatar
-                                      name={ownerName}
-                                      size="sm"
-                                      variant="soft"
-                                    />
-                                  )}
-                                  <Text ml="1">
-                                    {ownerName === "" ? "None" : ownerName}
-                                  </Text>
-                                </>
+                                <Owner ownerId={d.userId} gap="1" />
                               </td>
                               <td>{ago(d.dateUpdated)}</td>
                               <td style={{ width: 30 }}>
@@ -435,19 +428,29 @@ export default function DashboardsPage() {
                                           <BsThreeDotsVertical />
                                         </IconButton>
                                       }
+                                      menuPlacement="end"
+                                      variant="soft"
+                                      open={openDropdownId === d.id}
+                                      onOpenChange={(o) => {
+                                        setOpenDropdownId(o ? d.id : null);
+                                      }}
                                     >
-                                      <DropdownMenuItem
-                                        disabled={!canEdit}
-                                        onClick={() => setShowEditModal(d)}
-                                      >
-                                        Edit Dashboard Settings
-                                      </DropdownMenuItem>
-                                      <DropdownMenuItem
-                                        disabled={!canDuplicate}
-                                        onClick={() => setShowDuplicateModal(d)}
-                                      >
-                                        Duplicate
-                                      </DropdownMenuItem>
+                                      {canEdit && (
+                                        <DropdownMenuItem
+                                          onClick={() => setShowEditModal(d)}
+                                        >
+                                          Edit Dashboard Settings
+                                        </DropdownMenuItem>
+                                      )}
+                                      {canDuplicate && (
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            setShowDuplicateModal(d)
+                                          }
+                                        >
+                                          Duplicate
+                                        </DropdownMenuItem>
+                                      )}
                                       <DropdownMenuItem
                                         disabled={
                                           !canManageSharingAndEditLevels
@@ -460,30 +463,32 @@ export default function DashboardsPage() {
                                         Share...
                                       </DropdownMenuItem>
 
-                                      <DropdownMenuSeparator />
-                                      <DropdownMenuItem
-                                        disabled={!canDelete}
-                                        color="red"
-                                        confirmation={{
-                                          confirmationTitle: (
-                                            <span>
-                                              Delete Dashboard <i>{d.title}</i>?
-                                            </span>
-                                          ),
-                                          cta: "Delete",
-                                          submit: async () => {
-                                            await apiCall(
-                                              `/dashboards/${d.id}`,
-                                              {
-                                                method: "DELETE",
+                                      {canDelete && (
+                                        <>
+                                          <DropdownMenuSeparator />
+                                          <DropdownMenuItem
+                                            color="red"
+                                            confirmation={{
+                                              confirmationTitle: `Delete Dashboard "${d.title}"?`,
+                                              cta: "Delete",
+                                              submit: async () => {
+                                                await apiCall(
+                                                  `/dashboards/${d.id}`,
+                                                  {
+                                                    method: "DELETE",
+                                                  },
+                                                );
+                                                mutateDashboards();
                                               },
-                                            );
-                                            mutateDashboards();
-                                          },
-                                        }}
-                                      >
-                                        Delete
-                                      </DropdownMenuItem>
+                                              closeDropdown: () => {
+                                                setOpenDropdownId(null);
+                                              },
+                                            }}
+                                          >
+                                            Delete
+                                          </DropdownMenuItem>
+                                        </>
+                                      )}
                                     </DropdownMenu>
                                   </Flex>
                                 ) : null}

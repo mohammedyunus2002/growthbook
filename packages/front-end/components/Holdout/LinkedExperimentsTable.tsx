@@ -1,4 +1,5 @@
-import { HoldoutInterface } from "shared/validators";
+import { HoldoutInterfaceStringDates } from "shared/validators";
+import { getAllVariations } from "shared/experiments";
 import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { Box, Text } from "@radix-ui/themes";
 import { useRouter } from "next/router";
@@ -7,15 +8,16 @@ import { useAddComputedFields, useSearch } from "@/services/search";
 import { useUser } from "@/services/UserContext";
 import { useExperimentStatusIndicator } from "@/hooks/useExperimentStatusIndicator";
 import Link from "@/ui/Link";
-import Tooltip from "../Tooltip/Tooltip";
+import Tooltip from "@/components/Tooltip/Tooltip";
+import VariationLabel from "@/ui/VariationLabel";
 
 interface Props {
-  holdout: HoldoutInterface;
+  holdout: HoldoutInterfaceStringDates;
   experiments: ExperimentInterfaceStringDates[];
 }
 
 const LinkedExperimentsTable = ({ holdout, experiments }: Props) => {
-  const { getUserDisplay } = useUser();
+  const { getOwnerDisplay } = useUser();
   const getExperimentStatusIndicator = useExperimentStatusIndicator();
 
   const experimentItems = useAddComputedFields(
@@ -23,20 +25,21 @@ const LinkedExperimentsTable = ({ holdout, experiments }: Props) => {
     (exp) => {
       const statusIndicator = getExperimentStatusIndicator(exp);
       return {
-        ...experiments,
+        ...exp,
+        ownerNameDisplay: getOwnerDisplay(exp.owner),
         dateAdded: holdout.linkedExperiments[exp.id]?.dateAdded,
         dateEnded: exp.phases[exp.phases.length - 1]?.dateEnded,
         statusIndicator,
       };
     },
-    [holdout, experiments],
+    [getExperimentStatusIndicator, getOwnerDisplay, holdout],
   );
 
   const { items, SortableTH } = useSearch({
     items: experimentItems,
     defaultSortField: "dateAdded",
     localStorageKey: "holdoutLinkedExperiments",
-    searchFields: ["name", "status", "owner"],
+    searchFields: ["name", "status", "ownerNameDisplay"],
   });
 
   const router = useRouter();
@@ -64,17 +67,18 @@ const LinkedExperimentsTable = ({ holdout, experiments }: Props) => {
             <SortableTH field="releasedVariationId">
               Shipped Variation
             </SortableTH>
-            <SortableTH field="owner">Owner</SortableTH>
+            <SortableTH field="ownerNameDisplay">Owner</SortableTH>
             <SortableTH field="dateAdded">In Holdout</SortableTH>
             <SortableTH field="dateEnded">Date Ended</SortableTH>
           </tr>
         </thead>
         <tbody>
           {items.map((exp) => {
-            const variationIndex = exp.variations.findIndex(
+            const variations = getAllVariations(exp);
+            const variationIndex = variations.findIndex(
               (v) => v.id === exp.releasedVariationId,
             );
-            const variation = exp.variations[variationIndex];
+            const variation = variations[variationIndex];
             return (
               <tr
                 key={exp.id}
@@ -100,31 +104,18 @@ const LinkedExperimentsTable = ({ holdout, experiments }: Props) => {
                 </td>
                 <td data-title="Shipped Variation">
                   {variation ? (
-                    <div
-                      className={`variation variation${variationIndex} with-variation-label d-flex align-items-center`}
-                    >
-                      <span
-                        className="label"
-                        style={{ width: 20, height: 20, flex: "none" }}
-                      >
-                        {variationIndex}
-                      </span>
-                      <span
-                        className="d-inline-block"
-                        style={{
-                          width: 150,
-                          lineHeight: "14px",
-                        }}
-                      >
-                        {variation?.name}
-                      </span>
-                    </div>
+                    <VariationLabel
+                      number={variationIndex}
+                      name={variation.name}
+                      size="md"
+                      maxWidth="170px"
+                    />
                   ) : (
                     <span>--</span>
                   )}
                 </td>
                 <td data-title="Owner" className="col-2">
-                  {getUserDisplay(exp.owner, false)}
+                  {exp.ownerNameDisplay}
                 </td>
                 <td data-title="Date Added">
                   {exp.dateAdded ? date(exp.dateAdded) : ""}

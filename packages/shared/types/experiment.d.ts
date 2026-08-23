@@ -8,12 +8,15 @@ import {
   BanditEvent,
   ExperimentDecisionFrameworkSettings,
   HoldoutInterface,
+  RevisionStatus,
 } from "shared/validators";
 import { ExperimentRefVariation, FeatureInterface } from "./feature";
 
 export {
   AttributionModel,
   ImplementationType,
+  LookbackOverride,
+  LookbackOverrideValueUnit,
   MetricOverride,
   BanditResult,
   ExperimentStatus,
@@ -28,12 +31,15 @@ export {
   ExperimentInterface,
   ExperimentNotification,
   ExperimentResultsType,
+  PhaseVariation,
   Screenshot,
   Variation,
+  VariationStatus,
 } from "shared/validators";
 
 export {
   ExperimentTemplateInterface,
+  ApiExperimentTemplateInterface,
   CreateTemplateProps,
   UpdateTemplateProps,
 } from "shared/validators";
@@ -58,18 +64,21 @@ export type DecisionFrameworkExperimentRecommendationStatus =
       variations: DecisionFrameworkVariation[];
       powerReached: boolean;
       sequentialUsed: boolean;
+      scheduledEndPassed: boolean;
     }
   | {
       status: "rollback-now";
       variations: DecisionFrameworkVariation[];
       powerReached: boolean;
       sequentialUsed: boolean;
+      scheduledEndPassed: boolean;
     }
   | {
       status: "ready-for-review";
       variations: DecisionFrameworkVariation[];
       powerReached: boolean;
       sequentialUsed: boolean;
+      scheduledEndPassed: boolean;
     };
 
 export type ExperimentUnhealthyData = {
@@ -80,13 +89,18 @@ export type ExperimentUnhealthyData = {
     multipleExposedUsers: number;
   };
   lowPowered?: boolean;
+  covariateImbalance?: boolean;
 };
 
 export type ExperimentResultStatus =
   | DecisionFrameworkExperimentRecommendationStatus
   | { status: "no-data" }
   | { status: "unhealthy"; unhealthyData: ExperimentUnhealthyData }
-  | { status: "before-min-duration" };
+  | { status: "before-min-duration" }
+  // The scheduled end date has passed but there is no decision recommendation
+  // (e.g. no goal metrics, no results yet, or the Experiment Decision
+  // Framework is not enabled). Schedule-driven, not EDF-driven.
+  | { status: "scheduled-end-review" };
 
 export type ExperimentResultStatusData = ExperimentResultStatus & {
   tooltip?: string;
@@ -136,6 +150,21 @@ export type ExperimentPhaseStringDates = Omit<
   dateEnded?: string;
 };
 
+type NextScheduledStatusUpdateStringDates = Omit<
+  NonNullable<ExperimentInterface["nextScheduledStatusUpdate"]>,
+  "date"
+> & {
+  date: string;
+};
+
+type StatusUpdateScheduleStringDates = Omit<
+  NonNullable<ExperimentInterface["statusUpdateSchedule"]>,
+  "startAt" | "stopAt"
+> & {
+  startAt?: string;
+  stopAt?: string;
+};
+
 export type LegacyMetricOverride = MetricOverride & {
   conversionWindowHours?: number;
   conversionDelayHours?: number;
@@ -173,11 +202,17 @@ export interface LegacyExperimentInterface
 
 export type ExperimentInterfaceStringDates = Omit<
   ExperimentInterface,
-  "dateCreated" | "dateUpdated" | "phases"
+  | "dateCreated"
+  | "dateUpdated"
+  | "phases"
+  | "nextScheduledStatusUpdate"
+  | "statusUpdateSchedule"
 > & {
   dateCreated: string;
   dateUpdated: string;
   phases: ExperimentPhaseStringDates[];
+  nextScheduledStatusUpdate?: NextScheduledStatusUpdateStringDates | null;
+  statusUpdateSchedule?: StatusUpdateScheduleStringDates | null;
 };
 
 export type HoldoutExperimentInterface = ExperimentInterfaceStringDates &
@@ -207,6 +242,7 @@ export type ExperimentTargetingData = Pick<
   | "namespace"
   | "seed"
   | "variationWeights"
+  | "variations"
   | "savedGroups"
   | "prerequisites"
 > &
@@ -224,7 +260,12 @@ export type ExperimentTargetingData = Pick<
     reseed: boolean;
   };
 
-export type LinkedFeatureState = "locked" | "live" | "draft" | "discarded";
+export type LinkedFeatureState =
+  | "locked"
+  | "live"
+  | "draft"
+  | "discarded"
+  | "archived";
 
 export type LinkedFeatureEnvState =
   | "missing"
@@ -236,11 +277,42 @@ export interface LinkedFeatureInfo {
   feature: FeatureInterface;
   state: LinkedFeatureState;
   values: ExperimentRefVariation[];
+  /**
+   * True when the matching experiment-ref rule stores its variation values as
+   * sparse JSON patches (merged onto the feature default). Editors should render
+   * the values in sparse mode so they aren't mistaken for full objects.
+   */
+  sparse?: boolean;
   valuesFrom: string;
   inconsistentValues: boolean;
   rulesAbove: boolean;
   environmentStates: Record<string, LinkedFeatureEnvState>;
+  /**
+   * True when the live revision has at least one experiment-ref rule for this
+   * experiment.
+   */
+  liveHasMatchingRule?: boolean;
+  /** True when the matching draft revision requires approval (regardless of whether it's been approved yet). */
+  pendingApproval?: boolean;
+  /** Version of the matching draft revision (present when state === "draft"). */
+  draftRevisionVersion?: number;
+  /** Status of the matching draft revision (present when state === "draft"). */
+  draftRevisionStatus?: RevisionStatus;
+  /** True when the draft cannot be auto-merged into live due to conflicting changes. */
+  hasMergeConflict?: boolean;
+  /**
+   * True when the draft would publish changes outside the target experiment's
+   * experiment-ref rule(s) — e.g. defaultValue, prerequisites, holdout, or
+   * other rules. Forces the user to publish from the feature page so they
+   * can review the full set of changes before they go live. Per-env kill
+   * switches and metadata are excluded (auto-toggled / typically no SDK impact).
+   */
+  hasUnrelatedDraftChanges?: boolean;
 }
+
+export type LinkedChangeEnvState = "active" | "no-sdk-connection";
+
+export type LinkedChangeEnvStates = Record<string, LinkedChangeEnvState>;
 
 export type ExperimentHealthSettings = {
   decisionFrameworkEnabled: boolean;
@@ -249,36 +321,56 @@ export type ExperimentHealthSettings = {
   experimentMinLengthDays: number;
 };
 
-export type ExperimentDataForStatusStringDates = Pick<
-  ExperimentInterfaceStringDates,
-  | "type"
-  | "variations"
-  | "status"
-  | "archived"
-  | "results"
-  | "analysisSummary"
-  | "phases"
-  | "dismissedWarnings"
-  | "goalMetrics"
-  | "secondaryMetrics"
-  | "guardrailMetrics"
-  | "datasource"
-  | "decisionFrameworkSettings"
->;
+export type ExperimentDataForStatusStringDates = Omit<
+  Pick<
+    ExperimentInterfaceStringDates,
+    | "type"
+    | "variations"
+    | "status"
+    | "archived"
+    | "results"
+    | "analysisSummary"
+    | "phases"
+    | "dismissedWarnings"
+    | "goalMetrics"
+    | "secondaryMetrics"
+    | "guardrailMetrics"
+    | "datasource"
+    | "decisionFrameworkSettings"
+    | "nextScheduledStatusUpdate"
+    | "statusUpdateSchedule"
+  >,
+  "type"
+> & {
+  // Contextual bandits are a separate model but reuse the experiment status
+  // badge via an adapter, so allow their type here. Kept optional to match
+  // the source `type` field.
+  type?: ExperimentType | "contextual-bandit";
+};
 
-export type ExperimentDataForStatus = Pick<
-  ExperimentInterface,
-  | "type"
-  | "variations"
-  | "status"
-  | "archived"
-  | "results"
-  | "analysisSummary"
-  | "phases"
-  | "dismissedWarnings"
-  | "goalMetrics"
-  | "secondaryMetrics"
-  | "guardrailMetrics"
-  | "datasource"
-  | "decisionFrameworkSettings"
->;
+export type ExperimentDataForStatus = Omit<
+  Pick<
+    ExperimentInterface,
+    | "type"
+    | "variations"
+    | "status"
+    | "archived"
+    | "results"
+    | "analysisSummary"
+    | "phases"
+    | "dismissedWarnings"
+    | "goalMetrics"
+    | "secondaryMetrics"
+    | "guardrailMetrics"
+    | "datasource"
+    | "decisionFrameworkSettings"
+    | "nextScheduledStatusUpdate"
+    | "statusUpdateSchedule"
+  >,
+  "type"
+> & {
+  // Contextual bandits are a separate model but reuse the experiment status
+  // badge via an adapter, so allow their type here. Kept optional to match
+  // the source `type` field.
+  type?: ExperimentType | "contextual-bandit";
+};

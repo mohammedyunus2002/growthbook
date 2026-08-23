@@ -10,7 +10,7 @@ import {
   DEFAULT_REGRESSION_ADJUSTMENT_DAYS,
 } from "shared/constants";
 import { OrganizationSettings } from "shared/types/organization";
-import { ExperimentMetricInterface } from "shared/experiments";
+import { ExperimentMetricDefinition } from "shared/experiments";
 import { CustomMetricSlice } from "shared/validators";
 import Collapsible from "react-collapsible";
 import { PiCaretRightFill } from "react-icons/pi";
@@ -18,13 +18,13 @@ import useOrgSettings from "@/hooks/useOrgSettings";
 import { useAuth } from "@/services/auth";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import { useUser } from "@/services/UserContext";
-import Modal from "@/components/Modal";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import UpgradeMessage from "@/components/Marketing/UpgradeMessage";
 import UpgradeModal from "@/components/Settings/UpgradeModal";
 import track from "@/services/track";
 import PremiumCallout from "@/ui/PremiumCallout";
 import { getIsExperimentIncludedInIncrementalRefresh } from "@/services/experiments";
+import ModalStandard from "@/ui/Modal/Patterns/ModalStandard";
 import MetricsOverridesSelector from "./MetricsOverridesSelector";
 import { MetricsSelectorTooltip } from "./MetricsSelector";
 import MetricSelector from "./MetricSelector";
@@ -38,12 +38,11 @@ export interface EditMetricsFormInterface {
   activationMetric: string;
   metricOverrides: MetricOverride[];
   customMetricSlices?: CustomMetricSlice[];
-  pinnedMetricSlices?: string[];
 }
 
 export function getDefaultMetricOverridesFormValue(
   overrides: MetricOverride[],
-  getExperimentMetricById: (id: string) => ExperimentMetricInterface | null,
+  getExperimentMetricById: (id: string) => ExperimentMetricDefinition | null,
   settings: OrganizationSettings,
 ) {
   const defaultMetricOverrides = cloneDeep(overrides);
@@ -140,8 +139,6 @@ const EditMetricsForm: FC<{
   source?: string;
 }> = ({ experiment, cancel, mutate, source }) => {
   const [upgradeModal, setUpgradeModal] = useState(false);
-  const [hasMetricOverrideRiskError, setHasMetricOverrideRiskError] =
-    useState(false);
   const settings = useOrgSettings();
   const { hasCommercialFeature } = useUser();
   const hasOverrideMetricsFeature = hasCommercialFeature("override-metrics");
@@ -162,6 +159,7 @@ const EditMetricsForm: FC<{
     getIsExperimentIncludedInIncrementalRefresh(
       datasource ?? undefined,
       experiment.id,
+      experiment.type,
     );
 
   const form = useForm<EditMetricsFormInterface>({
@@ -172,7 +170,6 @@ const EditMetricsForm: FC<{
       activationMetric: experiment.activationMetric || "",
       metricOverrides: defaultMetricOverrides,
       customMetricSlices: experiment.customMetricSlices || [],
-      pinnedMetricSlices: experiment.pinnedMetricSlices || [],
     },
   });
   const { apiCall } = useAuth();
@@ -190,15 +187,13 @@ const EditMetricsForm: FC<{
   }
 
   return (
-    <Modal
+    <ModalStandard
       trackingEventModalType="edit-metrics-form"
       trackingEventModalSource={source}
-      autoFocusSelector=""
       header="Edit Metrics"
       size="lg"
       open={true}
       close={cancel}
-      ctaEnabled={!hasMetricOverrideRiskError}
       submit={form.handleSubmit(async (value) => {
         const payload = cloneDeep<EditMetricsFormInterface>(value);
         fixMetricOverridesBeforeSaving(value.metricOverrides || []);
@@ -208,11 +203,9 @@ const EditMetricsForm: FC<{
         });
         mutate();
       })}
-      cta="Save"
     >
       <ExperimentMetricsSelector
         noLegacyMetrics={isExperimentIncludedInIncrementalRefresh}
-        excludeQuantiles={isExperimentIncludedInIncrementalRefresh}
         datasource={experiment.datasource}
         exposureQueryId={experiment.exposureQueryId}
         project={experiment.project}
@@ -235,12 +228,13 @@ const EditMetricsForm: FC<{
         }
         filterConversionWindowMetrics={isHoldout}
         experimentId={experiment.id}
+        experimentType={experiment.type}
       />
       {/* If the org has the feature, we render a callout within MetricsSelector */}
       {!hasCommercialFeature("metric-groups") ? (
         <PremiumCallout
           commercialFeature="metric-groups"
-          dismissable={true}
+          dismissible={true}
           id="metrics-list-metric-group-promo"
           docSection="metricGroups"
           mb="4"
@@ -258,7 +252,11 @@ const EditMetricsForm: FC<{
               <span className="font-italic">
                 Users must convert on this metric before being included.{" "}
               </span>
-              <MetricsSelectorTooltip onlyBinomial={true} />
+              <MetricsSelectorTooltip
+                onlyBinomial={true}
+                noFactFunnelMetrics={true}
+                isSingular={true}
+              />
             </div>
             <MetricSelector
               initialOption="None"
@@ -268,6 +266,7 @@ const EditMetricsForm: FC<{
               datasource={experiment.datasource}
               project={experiment.project}
               onlyBinomial
+              filterFactFunnelMetrics
               includeFacts={true}
             />
           </div>
@@ -282,15 +281,6 @@ const EditMetricsForm: FC<{
             setCustomMetricSlices={(slices) =>
               form.setValue(
                 "customMetricSlices" as keyof EditMetricsFormInterface,
-                slices,
-              )
-            }
-            pinnedMetricSlices={
-              (form.watch("pinnedMetricSlices") as string[]) || []
-            }
-            setPinnedMetricSlices={(slices) =>
-              form.setValue(
-                "pinnedMetricSlices" as keyof EditMetricsFormInterface,
                 slices,
               )
             }
@@ -329,9 +319,6 @@ const EditMetricsForm: FC<{
                     !hasOverrideMetricsFeature ||
                     isExperimentIncludedInIncrementalRefresh
                   }
-                  setHasMetricOverrideRiskError={(v: boolean) =>
-                    setHasMetricOverrideRiskError(v)
-                  }
                 />
                 {!hasOverrideMetricsFeature && (
                   <UpgradeMessage
@@ -345,7 +332,7 @@ const EditMetricsForm: FC<{
           </Collapsible>
         </>
       ) : null}
-    </Modal>
+    </ModalStandard>
   );
 };
 

@@ -6,19 +6,41 @@ import {
 } from "@radix-ui/themes";
 import type { MarginProps } from "@radix-ui/themes/dist/esm/props/margin.props.js";
 import { PiCaretDown, PiWarningFill } from "react-icons/pi";
-import React, { ReactElement, useEffect, useState } from "react";
 import { amber } from "@radix-ui/colors";
-import Button from "@/ui/Button";
+import React, {
+  ReactElement,
+  useCallback,
+  useEffect,
+  useState,
+  createContext,
+  useContext,
+} from "react";
+import { createPortal } from "react-dom";
 import LoadingSpinner from "@/components/LoadingSpinner";
+import Button from "@/ui/Button";
 import Tooltip from "@/components/Tooltip/Tooltip";
-import Modal from "@/components/Modal";
+import ModalStandard from "@/ui/Modal/Patterns/ModalStandard";
+import { radixSize, Size } from "@/ui/sizes";
 
 type AllowedChildren = string | React.ReactNode;
+
+type DropdownVisibilityContextType = {
+  hideDropdown: () => void;
+  showDropdown: () => void;
+  closeDropdown: () => void;
+};
+
+const DropdownVisibilityContext =
+  createContext<DropdownVisibilityContextType | null>(null);
 
 type DropdownProps = {
   trigger: React.ReactNode;
   triggerClassName?: string;
+  triggerStyle?: React.CSSProperties;
   menuPlacement?: "start" | "center" | "end";
+  // Preferred side to open toward. Radix auto-flips to the opposite side on
+  // collision, so e.g. "top" opens upward when there's room, else downward.
+  menuSide?: "top" | "right" | "bottom" | "left";
   menuWidth?: "full" | number;
   children: AllowedChildren;
   color?: RadixDropdownMenu.ContentProps["color"];
@@ -26,17 +48,30 @@ type DropdownProps = {
   open?: boolean;
   onOpenChange?: (o: boolean) => void;
   disabled?: boolean;
+  modal?: boolean; // blocks clicks underneath the menu
+  /** Called when the menu closes and would return focus to the trigger — call
+   * e.preventDefault() to leave focus alone (e.g. when the selected item opens a
+   * popover that should keep focus). */
+  onCloseAutoFocus?: React.ComponentProps<
+    typeof RadixDropdownMenu.Content
+  >["onCloseAutoFocus"];
 } & MarginProps;
 
 export function DropdownMenu({
   trigger,
   triggerClassName,
+  triggerStyle,
   menuPlacement = "start",
+  menuSide = "bottom",
   menuWidth,
   children,
   color,
   variant,
   disabled,
+  open,
+  onOpenChange,
+  modal = false,
+  onCloseAutoFocus,
   ...props
 }: DropdownProps) {
   const triggerComponent =
@@ -51,27 +86,98 @@ export function DropdownMenu({
       trigger
     );
 
-  return (
-    <RadixDropdownMenu.Root {...props} modal={false}>
-      <RadixDropdownMenu.Trigger
-        className={triggerClassName}
-        disabled={disabled}
-      >
-        {triggerComponent}
-      </RadixDropdownMenu.Trigger>
-      <RadixDropdownMenu.Content
-        align={menuPlacement}
-        color={color}
-        variant={variant}
-        side="bottom"
-        className={
-          menuWidth === "full" ? "dropdown-content-width-full" : undefined
+  // Keep the public API uncontrolled unless `open` is provided. The wrapper
+  // owns uncontrolled state so confirmation flows can close the Radix root.
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const resolvedOpen = open ?? uncontrolledOpen;
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (open === undefined) {
+      setUncontrolledOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
+
+  // isHidden/isHiddenWithDelay: keep the menu mounted but invisible while a
+  // confirmation Modal is open above it (avoids remounting the Modal mid-flow).
+  const [isHidden, setIsHidden] = useState(false);
+  const [isHiddenWithDelay, setIsHiddenWithDelay] = useState(false);
+  useEffect(() => {
+    if (isHidden) {
+      setIsHiddenWithDelay(true);
+    } else {
+      setTimeout(() => setIsHiddenWithDelay(false), 500);
+    }
+  }, [isHidden, isHiddenWithDelay]);
+
+  const hideDropdown = () => setIsHidden(true);
+  const showDropdown = () => setIsHidden(false);
+  const closeDropdown = () => {
+    setIsHidden(false);
+    handleOpenChange(false);
+  };
+
+  // When modal=true, walk up from the Content node to find the Radix popper
+  // wrapper and elevate its z-index above the backdrop (9998).
+  const contentRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!modal || !node) return;
+      let el: HTMLElement | null = node.parentElement;
+      while (el) {
+        if (el.hasAttribute("data-radix-popper-content-wrapper")) {
+          el.style.zIndex = "9999";
+          return;
         }
-        style={{ width: typeof menuWidth === "number" ? menuWidth : undefined }}
+        el = el.parentElement;
+      }
+    },
+    [modal],
+  );
+
+  return (
+    <DropdownVisibilityContext.Provider
+      value={{ hideDropdown, showDropdown, closeDropdown }}
+    >
+      {modal && resolvedOpen && !isHidden
+        ? createPortal(
+            <div
+              style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+              onClick={() => handleOpenChange(false)}
+            />,
+            document.body,
+          )
+        : null}
+      <RadixDropdownMenu.Root
+        {...props}
+        modal={false}
+        open={resolvedOpen}
+        onOpenChange={handleOpenChange}
       >
-        {children}
-      </RadixDropdownMenu.Content>
-    </RadixDropdownMenu.Root>
+        <RadixDropdownMenu.Trigger
+          className={triggerClassName}
+          style={triggerStyle}
+          disabled={disabled}
+        >
+          {triggerComponent}
+        </RadixDropdownMenu.Trigger>
+        <RadixDropdownMenu.Content
+          side={menuSide}
+          ref={contentRef}
+          align={menuPlacement}
+          color={color}
+          variant={variant}
+          onCloseAutoFocus={onCloseAutoFocus}
+          className={
+            menuWidth === "full" ? "dropdown-content-width-full" : undefined
+          }
+          style={{
+            width: typeof menuWidth === "number" ? menuWidth : undefined,
+            visibility: isHiddenWithDelay ? "hidden" : "visible",
+          }}
+        >
+          {children}
+        </RadixDropdownMenu.Content>
+      </RadixDropdownMenu.Root>
+    </DropdownVisibilityContext.Provider>
   );
 }
 
@@ -106,13 +212,18 @@ type DropdownItemProps = {
   onClick?: (event: Event) => Promise<void> | void;
   color?: "red" | "default";
   shortcut?: RadixDropdownMenu.ItemProps["shortcut"];
+  tooltip?: string;
   confirmation?: {
     submit: () => Promise<void> | void;
     getConfirmationContent?: () => Promise<string | ReactElement | null>;
-    confirmationTitle: string | ReactElement;
+    confirmationTitle: string;
     cta: string;
-    submitColor?: string;
+    ctaColor?: "red" | "violet";
+    hideDropdown?: () => void;
+    showDropdown?: () => void;
+    closeDropdown?: () => void;
   };
+  style?: React.CSSProperties;
 } & MarginProps;
 
 export function DropdownMenuItem({
@@ -122,11 +233,13 @@ export function DropdownMenuItem({
   color,
   onClick,
   confirmation,
+  tooltip,
   ...props
 }: DropdownItemProps) {
   if (color === "default") {
     color = undefined;
   }
+  const visibilityContext = useContext(DropdownVisibilityContext);
   const [confirming, setConfirming] = useState(false);
   const [confirmationContent, setConfirmationContent] = useState<
     string | ReactElement | null
@@ -142,78 +255,120 @@ export function DropdownMenuItem({
 
   const [error, setError] = useState<null | string>(null);
   const [loading, setLoading] = useState(false);
+
+  // Get hideDropdown, showDropdown, and closeDropdown from confirmation prop or context
+  // Context is the primary source (provided by DropdownMenu), but can be overridden
+  const hideDropdown =
+    confirmation?.hideDropdown ?? visibilityContext?.hideDropdown;
+  const showDropdown =
+    confirmation?.showDropdown ?? visibilityContext?.showDropdown;
+  const closeDropdown =
+    confirmation?.closeDropdown ?? visibilityContext?.closeDropdown;
+
+  const handleClose = () => {
+    setConfirming(false);
+    showDropdown?.();
+    closeDropdown?.();
+  };
+
+  const menuItem = (
+    <RadixDropdownMenu.Item
+      disabled={disabled || !!error || !!loading}
+      onSelect={async (event) => {
+        if (confirmation) {
+          // Prevent Radix from closing the menu so the confirmation modal can
+          // appear above it without unmounting the dropdown mid-flow.
+          event.preventDefault();
+          if (!hideDropdown || !showDropdown) {
+            console.error(
+              "confirmation requires hideDropdown and showDropdown. Ensure DropdownMenuItem is used within a DropdownMenu component.",
+            );
+            return;
+          }
+          hideDropdown();
+          setConfirming(true);
+          return;
+        }
+        if (onClick) {
+          setError(null);
+          setLoading(true);
+          try {
+            await onClick(event);
+          } catch (e) {
+            setError(e.message);
+            console.error(e);
+          }
+          setLoading(false);
+        }
+      }}
+      color={color}
+      shortcut={shortcut}
+      {...props}
+    >
+      {loading || error ? (
+        <Flex as="div" justify="between" align="center">
+          <Box as="span" className={loading ? "font-italic" : ""}>
+            {children}
+          </Box>
+          <Box width="14px" className="ml-3">
+            {loading ? <LoadingSpinner /> : null}
+            {error ? (
+              <Tooltip body={`Error: ${error}. Exit menu and try again.`}>
+                <PiWarningFill color={amber.amber11} />
+              </Tooltip>
+            ) : null}
+          </Box>
+        </Flex>
+      ) : (
+        children
+      )}
+    </RadixDropdownMenu.Item>
+  );
+
   return (
     <>
       {confirmation && confirming && (
-        <Modal
+        <ModalStandard
           trackingEventModalType=""
           header={confirmation.confirmationTitle}
-          close={() => setConfirming(false)}
+          close={handleClose}
           open={true}
           cta={confirmation.cta}
-          submitColor={confirmation.submitColor ?? "danger"}
+          ctaColor={confirmation.ctaColor ?? "red"}
           submit={confirmation.submit}
-          increasedElevation={true}
         >
           {confirmationContent ?? "Are you sure? This action cannot be undone."}
-        </Modal>
+        </ModalStandard>
       )}
-      <RadixDropdownMenu.Item
-        disabled={disabled || !!error || !!loading}
-        onSelect={async (event) => {
-          event.preventDefault();
-          if (confirmation) {
-            setConfirming(true);
-            return;
-          }
-          if (onClick) {
-            setError(null);
-            setLoading(true);
-            try {
-              await onClick(event);
-              // If this promise is resolved without an error, we need to close
-            } catch (e) {
-              setError(e.message);
-              console.error(e);
-            }
-            setLoading(false);
-          }
-        }}
-        color={color}
-        shortcut={shortcut}
-        {...props}
-      >
-        <Flex as="div" justify="between" align="center">
-          <Box as="span" className={`mr-2 ${loading ? "font-italic" : ""}`}>
-            {children}
-          </Box>
-          {loading || error ? (
-            <Box width="14px" className="ml-4">
-              {loading ? <LoadingSpinner /> : null}
-              {error ? (
-                <Tooltip body={`Error: ${error}. Exit menu and try again.`}>
-                  <PiWarningFill color={amber.amber11} />
-                </Tooltip>
-              ) : null}
-            </Box>
-          ) : null}
-        </Flex>
-      </RadixDropdownMenu.Item>
+      {tooltip ? <Tooltip body={tooltip}>{menuItem}</Tooltip> : menuItem}
     </>
   );
 }
 
 type DropdownMenuLabelProps = React.ComponentProps<
   typeof RadixDropdownMenu.Label
->;
+> & {
+  textStyle?: React.CSSProperties;
+  textSize?: Size<"sm" | "md" | "lg" | "xl">;
+  textColor?: React.ComponentProps<typeof Text>["color"];
+};
 
 export function DropdownMenuLabel({
   children,
+  textStyle,
+  textSize,
+  textColor = "gray",
   ...props
 }: DropdownMenuLabelProps): JSX.Element {
   return (
     <RadixDropdownMenu.Label {...props}>
-      <Text color="gray">{children}</Text>
+      <Text
+        color={textColor}
+        size={textSize !== undefined ? radixSize(textSize) : undefined}
+        style={textStyle}
+      >
+        {children}
+      </Text>
     </RadixDropdownMenu.Label>
   );
 }
@@ -224,9 +379,15 @@ export function DropdownMenuSeparator() {
 
 export function DropdownMenuGroup({
   children,
+  label,
   ...props
-}: React.ComponentProps<typeof RadixDropdownMenu.Group>): JSX.Element {
+}: React.ComponentProps<typeof RadixDropdownMenu.Group> & {
+  label?: string;
+}): JSX.Element {
   return (
-    <RadixDropdownMenu.Group {...props}>{children}</RadixDropdownMenu.Group>
+    <RadixDropdownMenu.Group {...props}>
+      {label && <DropdownMenuLabel>{label}</DropdownMenuLabel>}
+      {children}
+    </RadixDropdownMenu.Group>
   );
 }

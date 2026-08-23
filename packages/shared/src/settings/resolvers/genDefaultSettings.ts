@@ -1,5 +1,6 @@
 import { MemberRoleInfo, MetricDefaults } from "shared/types/organization";
 import {
+  DEFAULT_CONFIDENCE_LEVEL,
   DEFAULT_EXPERIMENT_MAX_LENGTH_DAYS,
   DEFAULT_EXPERIMENT_MIN_LENGTH_DAYS,
   DEFAULT_METRIC_CAPPING,
@@ -9,6 +10,7 @@ import {
   DEFAULT_METRIC_WINDOW_HOURS,
   DEFAULT_P_VALUE_THRESHOLD,
   DEFAULT_P_VALUE_CORRECTION,
+  DEFAULT_POST_STRATIFICATION_ENABLED,
   DEFAULT_REGRESSION_ADJUSTMENT_DAYS,
   DEFAULT_REGRESSION_ADJUSTMENT_ENABLED,
   DEFAULT_SEQUENTIAL_TESTING_ENABLED,
@@ -20,10 +22,11 @@ import {
   DEFAULT_SRM_THRESHOLD,
   DEFAULT_USE_STICKY_BUCKETING,
   DEFAULT_MAX_METRIC_SLICE_LEVELS,
+  DEFAULT_TOP_VALUES_LOOKBACK_VALUE,
+  DEFAULT_TOP_VALUES_LOOKBACK_UNIT,
 } from "../../constants";
 import { Settings } from "../types";
 
-export const DEFAULT_CONFIDENCE_LEVEL = 0.95;
 export const DEFAULT_ATTRIBUTION_MODEL = "firstExposure";
 export const DEFAULT_ROLE: MemberRoleInfo = {
   environments: [],
@@ -81,6 +84,7 @@ export default function genDefaultSettings(): Settings {
     sequentialTestingEnabled: DEFAULT_SEQUENTIAL_TESTING_ENABLED,
     sequentialTestingTuningParameter:
       DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER,
+    postStratificationEnabled: DEFAULT_POST_STRATIFICATION_ENABLED,
     sdkInstructionsViewed: DEFAULT_SDK_INSTRUCTIONS_VIEWED,
     statsEngine: DEFAULT_STATS_ENGINE,
     updateSchedule: DEFAULT_UPDATE_SCHEDULE,
@@ -94,6 +98,7 @@ export default function genDefaultSettings(): Settings {
     secureAttributeSalt: DEFAULT_SECURE_ATTRIBUTE_SALT,
     killswitchConfirmation: DEFAULT_KILLSWITCH_CONFIRMATION,
     requireReviews: DEFAULT_REQUIRE_REVIEW,
+    targetingReviewMode: [],
     featureKeyExample: DEFAULT_FEATURE_KEY_EXAMPLE,
     featureRegexValidator: DEFAULT_FEATURE_REGEX_VALIDATOR,
     banditScheduleValue: DEFAULT_BANDIT_SCHEDULE_VALUE,
@@ -103,6 +108,8 @@ export default function genDefaultSettings(): Settings {
     experimentMinLengthDays: DEFAULT_EXPERIMENT_MIN_LENGTH_DAYS,
     experimentMaxLengthDays: DEFAULT_EXPERIMENT_MAX_LENGTH_DAYS,
     maxMetricSliceLevels: DEFAULT_MAX_METRIC_SLICE_LEVELS,
+    topValuesLookbackValue: DEFAULT_TOP_VALUES_LOOKBACK_VALUE,
+    topValuesLookbackUnit: DEFAULT_TOP_VALUES_LOOKBACK_UNIT,
     useStickyBucketing: DEFAULT_USE_STICKY_BUCKETING,
     targetMDE: DEFAULT_TARGET_MDE,
   };

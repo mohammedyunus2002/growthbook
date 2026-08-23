@@ -18,7 +18,7 @@ import Badge from "@/ui/Badge";
 import MoreMenu from "@/components/Dropdown/MoreMenu";
 import DeleteButton from "@/components/DeleteButton/DeleteButton";
 import LoadingSpinner from "@/components/LoadingSpinner";
-import { StripeProvider } from "../Billing/StripeProvider";
+import { StripeProvider } from "@/enterprise/components/Billing/StripeProvider";
 import AddPaymentMethodModal from "./AddPaymentMethodModal";
 
 export default function PaymentInfo() {
@@ -133,6 +133,7 @@ export default function PaymentInfo() {
       ) : null}
       {defaultPaymentMethod ? (
         <Modal
+          useRadixButton={false}
           header="Update default payment method"
           open={true}
           cta="Set as default payment method"
@@ -224,7 +225,7 @@ export default function PaymentInfo() {
                                 {method.type === "card"
                                   ? `Expires ${method.expMonth}/${method.expYear}`
                                   : null}
-                                <MoreMenu className="pl-2">
+                                <MoreMenu useRadix={false} className="pl-2">
                                   <button
                                     className="dropdown-item"
                                     disabled={method.isDefault}
@@ -241,6 +242,7 @@ export default function PaymentInfo() {
                                     shouldDisplay={method.isDefault}
                                   >
                                     <DeleteButton
+                                      useRadix={false}
                                       onClick={async () =>
                                         await detachPaymentMethod(method.id)
                                       }

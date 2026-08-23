@@ -8,7 +8,7 @@ import Field from "@/components/Forms/Field";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/ui/Tabs";
 import Switch from "@/ui/Switch";
 import SelectField from "@/components/Forms/SelectField";
-import MultiSelectField from "@/components/Forms/MultiSelectField";
+import MultiSelectField from "@/ui/MultiSelectField";
 import DatePicker from "@/components/DatePicker";
 import styles from "./AttributeForm.module.scss";
 
@@ -19,6 +19,7 @@ export interface Props {
   jsonCTA?: string;
   hideTitle?: boolean;
   useJSONButton?: boolean;
+  headerContent?: React.ReactNode;
 }
 
 export default function AttributeForm({
@@ -28,6 +29,7 @@ export default function AttributeForm({
   jsonCTA = "Test Attributes",
   hideTitle = false,
   useJSONButton = true,
+  headerContent,
 }: Props) {
   const [formValues, setFormValues] = useState({});
   const [jsonAttributes, setJsonAttributes] = useState<string>(
@@ -130,9 +132,13 @@ export default function AttributeForm({
     ) {
       // prep for use in MultiSelectField
       if (Array.isArray(value)) {
-        options = value.map((v: string) => ({ value: v, label: v }));
-      } else if (typeof value === "string") {
-        options = [{ value: value, label: value }];
+        options = value.map((v: string | number) => ({
+          value: String(v),
+          label: String(v),
+        }));
+      } else if (typeof value === "string" || typeof value === "number") {
+        const strValue = String(value);
+        options = [{ value: strValue, label: strValue }];
         value = [value];
       }
     } else if (attribute.datatype === "string") {
@@ -159,6 +165,7 @@ export default function AttributeForm({
               />
             ) : attribute.datatype === "enum" ? (
               <SelectField
+                size="legacy"
                 value={value as string}
                 onChange={(v) => {
                   // on change here does not trigger the form to change
@@ -176,10 +183,26 @@ export default function AttributeForm({
               />
             ) : attribute.datatype === "string[]" ? (
               <MultiSelectField
+                legacyHeight
                 options={options}
                 value={Array.isArray(value) ? value : []}
                 onChange={(value) => {
                   attributeFormValues.set(attribute.property, value);
+                  updateFormValues();
+                }}
+                creatable={true}
+              />
+            ) : attribute.datatype === "number[]" ? (
+              <MultiSelectField
+                legacyHeight
+                options={options}
+                value={Array.isArray(value) ? value.map(String) : []}
+                onChange={(value) => {
+                  const numArray = value.map((v) => {
+                    const num = Number(v);
+                    return isNaN(num) ? v : num;
+                  });
+                  attributeFormValues.set(attribute.property, numArray);
                   updateFormValues();
                 }}
                 creatable={true}
@@ -200,6 +223,7 @@ export default function AttributeForm({
                   />
                 ) : (
                   <Field
+                    size="legacy"
                     className=""
                     value={value as string}
                     onChange={(e) => {
@@ -214,16 +238,20 @@ export default function AttributeForm({
               </>
             ) : attribute.datatype === "number" ? (
               <Field
+                size="legacy"
                 className=""
                 type="number"
                 value={value as string}
                 onChange={(e) => {
-                  attributeFormValues.set(attribute.property, e.target.value);
+                  const numValue =
+                    e.target.value === "" ? "" : Number(e.target.value);
+                  attributeFormValues.set(attribute.property, numValue);
                   updateFormValues();
                 }}
               />
             ) : (
               <Field
+                size="legacy"
                 className=""
                 value={value as string}
                 onChange={(e) => {
@@ -268,6 +296,7 @@ export default function AttributeForm({
             className={`${styles.attributeBox} pb-2 round appbox`}
             style={{ borderTopRightRadius: 0 }}
           >
+            {headerContent && <div className="p-2">{headerContent}</div>}
             <TabsContent value="simple">
               <div className=" form-group ">
                 <div
@@ -294,6 +323,7 @@ export default function AttributeForm({
               <div className="p-2">
                 <div className="form-group rounded">
                   <Field
+                    size="legacy"
                     label="JSON Values"
                     value={jsonAttributes}
                     onChange={(e) => {

@@ -1,3 +1,4 @@
+import { isFactMetric } from "../../experiments";
 import genDefaultResolver from "./resolvers/genDefaultResolver";
 import genMetricOverrideResolver from "./resolvers/genMetricOverrideResolver";
 import genDefaultSettings from "./resolvers/genDefaultSettings";
@@ -13,8 +14,13 @@ import {
 } from "./types";
 import regressionAdjustmentResolver from "./resolvers/regressionAdjustmentEnabledResolver";
 import metricTargetMDEResolver from "./resolvers/metricTargetMDEResolver";
+import postStratificationEnabledResolver from "./resolvers/postStratificationEnabledResolver";
 export * from "./types";
 export { DEFAULT_MAX_METRIC_SLICE_LEVELS } from "../../constants";
+export {
+  DEFAULT_TOP_VALUES_LOOKBACK_VALUE,
+  DEFAULT_TOP_VALUES_LOOKBACK_UNIT,
+} from "../../constants";
 
 export const resolvers: Record<
   keyof Settings,
@@ -92,6 +98,7 @@ export const resolvers: Record<
       report: true,
     },
   ),
+  postStratificationEnabled: postStratificationEnabledResolver(),
   attributionModel: genDefaultResolver("attributionModel", {
     project: "settings.attributionModel",
     experiment: true,
@@ -107,6 +114,7 @@ export const resolvers: Record<
   secureAttributeSalt: genDefaultResolver("secureAttributeSalt"),
   killswitchConfirmation: genDefaultResolver("killswitchConfirmation"),
   requireReviews: genDefaultResolver("requireReviews"),
+  targetingReviewMode: genDefaultResolver("targetingReviewMode"),
   featureKeyExample: genDefaultResolver("featureKeyExample"),
   featureRegexValidator: genDefaultResolver("featureRegexValidator"),
   banditScheduleValue: genDefaultResolver("banditScheduleValue"),
@@ -116,6 +124,8 @@ export const resolvers: Record<
   experimentMinLengthDays: genDefaultResolver("experimentMinLengthDays"),
   experimentMaxLengthDays: genDefaultResolver("experimentMaxLengthDays"),
   maxMetricSliceLevels: genDefaultResolver("maxMetricSliceLevels"),
+  topValuesLookbackValue: genDefaultResolver("topValuesLookbackValue"),
+  topValuesLookbackUnit: genDefaultResolver("topValuesLookbackUnit"),
   useStickyBucketing: genDefaultResolver("useStickyBucketing"),
   // TODO prior resolvers
 };
@@ -135,7 +145,6 @@ const scopeSettings = (
   // iterate over resolvers and apply them to the base settings
   const settings = Object.entries(resolvers).reduce(
     (acc, [fieldName, resolver]) => {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-expect-error - todo: we need to figure out how to resolve the type
       acc[fieldName as keyof Settings] = resolver(ctx);
       return acc;
@@ -177,8 +186,11 @@ export const getScopedSettings = (
   scopes: ScopeDefinition,
 ): ScopedSettingsReturn => {
   const settings = normalizeInputSettings(scopes.organization.settings || {});
+  // Only warn for legacy metrics with a denominator (string metric ID reference).
+  // FactMetrics have denominator as a ColumnRef object, not a separate metric.
   if (
     scopes?.metric &&
+    !isFactMetric(scopes.metric) &&
     scopes.metric.denominator &&
     !scopes.denominatorMetric
   ) {

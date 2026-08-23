@@ -6,6 +6,7 @@ import {
   ExperimentPhaseStringDates,
   ExperimentStatus,
 } from "shared/types/experiment";
+import { getAllVariations } from "shared/experiments";
 import { getValidDate, date } from "shared/dates";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -19,7 +20,8 @@ import { format } from "date-fns";
 import { GridColumns } from "@visx/grid";
 import styles from "@/components/Metrics/DateGraph.module.scss";
 import EmptyState from "@/components/EmptyState";
-import ExperimentStatusIndicator from "../TabbedPage/ExperimentStatusIndicator";
+import ExperimentStatusIndicator from "@/components/Experiment/TabbedPage/ExperimentStatusIndicator";
+import VariationLabel from "@/ui/VariationLabel";
 
 const margin = { top: 30, right: 60, bottom: 30, left: 200 }; // Increased right margin to prevent end tick cutoff
 
@@ -423,25 +425,13 @@ const HoldoutTimeline: React.FC<{
                         Shipped:
                       </Text>
                       {tooltipData.shippedVariation ? (
-                        <div
-                          className={`variation variation${tooltipData.shippedVariation.index} with-variation-label d-flex align-items-center`}
-                        >
-                          <span
-                            className="label"
-                            style={{ width: 20, height: 20, flex: "none" }}
-                          >
-                            {tooltipData.shippedVariation.index}
-                          </span>
-                          <span
-                            className="d-inline-block"
-                            style={{
-                              width: 150,
-                              lineHeight: "14px",
-                            }}
-                          >
-                            {tooltipData.shippedVariation.name}
-                          </span>
-                        </div>
+                        <VariationLabel
+                          number={tooltipData.shippedVariation.index}
+                          name={tooltipData.shippedVariation.name}
+                          size="md"
+                          maxWidth="170px"
+                          disableTooltip
+                        />
                       ) : (
                         <span>--</span>
                       )}
@@ -565,11 +555,12 @@ const HoldoutTimeline: React.FC<{
               {experiments.map((experiment) => {
                 if (experiment.phases) {
                   // Find shipped variation index and name if it exists
-                  const variationIndex = experiment.variations.findIndex(
+                  const variations = getAllVariations(experiment);
+                  const variationIndex = variations.findIndex(
                     (v) => v.id === experiment.releasedVariationId,
                   );
-                  const shippedVariation = experiment.variations[variationIndex]
-                    ? experiment.variations[variationIndex].name
+                  const shippedVariation = variations[variationIndex]
+                    ? variations[variationIndex].name
                     : null;
                   return experiment.phases.map((phase, i) => {
                     const start = getValidDate(phase.dateStarted) ?? "";

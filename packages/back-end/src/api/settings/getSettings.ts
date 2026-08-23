@@ -1,11 +1,14 @@
 import { getScopedSettings } from "shared/settings";
-import { GetSettingsResponse } from "shared/types/openapi";
 import { getSettingsValidator } from "shared/validators";
 import { createApiRequestHandler } from "back-end/src/util/handler";
+import {
+  toApiRequireReviews,
+  toApiSavedGroupApprovals,
+} from "./approvalRuleShapes";
 
 export const getSettings = createApiRequestHandler(getSettingsValidator)(async (
   req,
-): Promise<GetSettingsResponse> => {
+) => {
   const { settings: scopedSettings } = getScopedSettings({
     organization: req.context.org,
   });
@@ -22,8 +25,14 @@ export const getSettings = createApiRequestHandler(getSettingsValidator)(async (
   const settings = {
     ...filteredSettings,
     requireReviews: Array.isArray(filteredSettings.requireReviews)
-      ? filteredSettings.requireReviews
+      ? toApiRequireReviews(filteredSettings.requireReviews)
       : [],
+    // Not a scoped setting, so read it straight off the org.
+    approvalFlows: {
+      savedGroups: toApiSavedGroupApprovals(
+        req.context.org.settings?.approvalFlows?.savedGroups ?? [],
+      ),
+    },
     experimentMaxLengthDays: filteredSettings.experimentMaxLengthDays ?? null,
     preferredEnvironment:
       req.context.org.settings?.preferredEnvironment ?? null,

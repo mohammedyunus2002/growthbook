@@ -6,13 +6,14 @@ import { EventWebHookEditParams } from "@/components/EventWebHooks/utils";
 import { EventWebHookAddEditModal } from "@/components/EventWebHooks/EventWebHookAddEditModal/EventWebHookAddEditModal";
 import { docUrl, DocLink } from "@/components/DocLink";
 import Button from "@/ui/Button";
+import Callout from "@/ui/Callout";
 import { EventWebHookListItem } from "./EventWebHookListItem/EventWebHookListItem";
 
 type EventWebHookListProps = {
   onCreateModalOpen: () => void;
   onModalClose: () => void;
   isModalOpen: boolean;
-  onAdd: (data: EventWebHookEditParams) => void;
+  onAdd: (data: EventWebHookEditParams) => Promise<void>;
   eventWebHooks: EventWebHookInterface[];
   errorMessage: string | null;
   createError: string | null;
@@ -49,7 +50,7 @@ export const EventWebHookList: FC<EventWebHookListProps> = ({
         <p>
           Monitor specific events globally accross features and experiments.
           <span className="ml-2">
-            <DocLink docSection={"eventWebhooks"}>
+            <DocLink useRadix={false} docSection={"eventWebhooks"}>
               View Documentation &gt;
             </DocLink>
           </span>
@@ -58,7 +59,9 @@ export const EventWebHookList: FC<EventWebHookListProps> = ({
 
       {/* Feedback messages */}
       {errorMessage && (
-        <div className="alert alert-danger my-3">{errorMessage}</div>
+        <Callout status="error" my="3">
+          {errorMessage}
+        </Callout>
       )}
 
       {/* Empty state*/}
@@ -108,8 +111,6 @@ export const EventWebHookListContainer = () => {
   const { apiCall } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
 
-  const [createError, setCreateError] = useState<string | null>(null);
-
   const { data, error, mutate } = useApi<{
     eventWebHooks: EventWebHookInterface[];
   }>("/event-webhooks");
@@ -120,32 +121,19 @@ export const EventWebHookListContainer = () => {
 
   const handleAdd = useCallback(
     async (data: EventWebHookEditParams) => {
-      // Keep the modal open and display error
-      const handleCreateError = (message: string) => {
-        setCreateError(`Failed to create webhook: ${message}`);
-        setIsModalOpen(true);
-      };
+      const response = await apiCall<{
+        error?: string;
+        eventWebHook?: EventWebHookInterface;
+      }>("/event-webhooks", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
 
-      try {
-        const response = await apiCall<{
-          error?: string;
-          eventWebHook?: EventWebHookInterface;
-        }>("/event-webhooks", {
-          method: "POST",
-          body: JSON.stringify(data),
-        });
-
-        if (response.error) {
-          handleCreateError(response.error || "Unknown error");
-        } else {
-          setCreateError(null);
-          setIsModalOpen(false);
-          mutate();
-        }
-      } catch (e) {
-        setIsModalOpen(true);
-        handleCreateError("Unknown error");
+      if (response.error) {
+        throw new Error(response.error);
       }
+
+      mutate();
     },
     [mutate, apiCall],
   );
@@ -158,7 +146,7 @@ export const EventWebHookListContainer = () => {
       eventWebHooks={data?.eventWebHooks || []}
       onAdd={handleAdd}
       errorMessage={error?.message || null}
-      createError={createError}
+      createError={null}
     />
   );
 };

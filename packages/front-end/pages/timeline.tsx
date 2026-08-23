@@ -1,4 +1,6 @@
 import React, { useCallback, useState, useEffect } from "react";
+import { useRouter } from "next/router";
+import { useSearchParams } from "next/navigation";
 import { getValidDate } from "shared/dates";
 import { Box, Flex, Heading } from "@radix-ui/themes";
 import { ComputedExperimentInterface } from "shared/types/experiment";
@@ -12,27 +14,33 @@ import DatePicker from "@/components/DatePicker";
 import EmptyState from "@/components/EmptyState";
 import { useExperimentSearch, experimentDate } from "@/services/experiments";
 import LinkButton from "@/ui/LinkButton";
+import { formatDateForURL, parseDateFromURL } from "@/utils/date";
+import Callout from "@/ui/Callout";
 
 const ExperimentTimelinePage = (): React.ReactElement => {
+  const router = useRouter();
   const { ready, project } = useDefinitions();
-  const searchParams = new URLSearchParams(window.location.search);
+  const searchParams = useSearchParams();
   const today = new Date();
   const [startDate, setStartDate] = useState<Date>(
     searchParams.get("startDate")
-      ? new Date(searchParams.get("startDate")!)
+      ? parseDateFromURL(searchParams.get("startDate")!)
       : new Date(today.getTime() - 180 * 24 * 60 * 60 * 1000), // 180 days ago
   );
   const [endDate, setEndDate] = useState<Date>(
     searchParams.get("endDate")
-      ? new Date(searchParams.get("endDate")!)
+      ? parseDateFromURL(searchParams.get("endDate")!)
       : new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000), // 7 days in the future
   );
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    params.set("startDate", startDate.toISOString().slice(0, 10)); // Keep only YYYY-MM-DD
-    params.set("endDate", endDate.toISOString().slice(0, 10)); // Keep only YYYY-MM-DD
-    const newUrl = `${window.location.pathname}?${params.toString()}`;
-    window.history.pushState({}, "", newUrl);
+    params.set("startDate", formatDateForURL(startDate));
+    params.set("endDate", formatDateForURL(endDate));
+    router.replace(`${router.pathname}?${params.toString()}`, undefined, {
+      shallow: true,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startDate, endDate]);
 
   const {
@@ -60,14 +68,11 @@ const ExperimentTimelinePage = (): React.ReactElement => {
     useExperimentSearch({
       allExperiments,
       filterResults,
+      localStorageKey: "timeline-page",
     });
 
   if (error) {
-    return (
-      <div className="alert alert-danger">
-        An error occurred: {error.message}
-      </div>
-    );
+    return <Callout status="error">An error occurred: {error.message}</Callout>;
   }
 
   if (loading || !ready) {
@@ -96,6 +101,7 @@ const ExperimentTimelinePage = (): React.ReactElement => {
               <Flex align="center" gap="2" className="mb-3" justify="between">
                 <Box flexBasis="60%" flexShrink="1" flexGrow="0">
                   <Field
+                    size="legacy"
                     placeholder="Search..."
                     type="search"
                     {...searchInputProps}

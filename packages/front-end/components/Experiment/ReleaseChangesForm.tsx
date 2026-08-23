@@ -4,26 +4,30 @@ import {
   ExperimentPhaseStringDates,
   ExperimentTargetingData,
 } from "shared/types/experiment";
+import { getLatestPhaseVariations } from "shared/experiments";
 import React, { useEffect, useMemo, useState } from "react";
-import { FaExclamationCircle, FaExternalLinkAlt } from "react-icons/fa";
+import { FaExternalLinkAlt } from "react-icons/fa";
 import clsx from "clsx";
 import { BiHide, BiShow } from "react-icons/bi";
 import { FeaturePrerequisite, SavedGroupTargeting } from "shared/types/feature";
+import { BsCheckCircle, BsExclamationCircle } from "react-icons/bs";
+import { PiLightbulb } from "react-icons/pi";
 import {
-  BsCheckCircle,
-  BsExclamationCircle,
-  BsLightbulb,
-} from "react-icons/bs";
+  getNamespaceRanges,
+  hasNarrowedRanges,
+  NamespaceValue,
+} from "shared/util";
 import useOrgSettings from "@/hooks/useOrgSettings";
 import {
   ChangeType,
   ReleasePlan,
-} from "@/components/Experiment/EditTargetingModal";
+} from "@/components/Experiment/MakeChangesFlow";
 import TargetingInfo from "@/components/Experiment/TabbedPage/TargetingInfo";
 import SelectField from "@/components/Forms/SelectField";
 import Tooltip from "@/components/Tooltip/Tooltip";
 import { DocLink } from "@/components/DocLink";
 import { formatPercent } from "@/services/metrics";
+import Callout from "@/ui/Callout";
 
 export interface Props {
   experiment: ExperimentInterfaceStringDates;
@@ -125,6 +129,7 @@ export default function ReleaseChangesForm({
   return (
     <div className="mt-4 mb-2">
       <SelectField
+        size="legacy"
         label="Release plan"
         value={releasePlan || ""}
         options={getReleasePlanOptions({
@@ -209,21 +214,23 @@ export default function ReleaseChangesForm({
                 : "Sticky Bucketed users will be excluded from the experiment."
             : "No sticky bucketing."}
           {form.watch("newPhase") && isBandit && (
-            <div className="alert alert-warning text-danger mt-2">
-              <FaExclamationCircle className="mr-2" />
+            <Callout status="warning" mt="2">
               This Bandit will restart. Variation weights will reset (
-              {experiment.variations
-                .map((_, i) =>
-                  i < 3
-                    ? formatPercent(1 / (experiment.variations.length ?? 2))
-                    : i === 3
-                      ? "..."
-                      : null,
-                )
-                .filter(Boolean)
-                .join(", ")}
+              {(() => {
+                const variations = getLatestPhaseVariations(experiment);
+                return variations
+                  .map((_, i) =>
+                    i < 3
+                      ? formatPercent(1 / (variations.length ?? 2))
+                      : i === 3
+                        ? "..."
+                        : null,
+                  )
+                  .filter(Boolean)
+                  .join(", ");
+              })()}
               ).
-            </div>
+            </Callout>
           )}
         </div>
       </div>
@@ -238,11 +245,10 @@ export default function ReleaseChangesForm({
         />
       )}
       {changeType === "phase" && releasePlan === "new-phase-same-seed" && (
-        <div className="alert alert-warning">
-          <FaExclamationCircle className="mr-1" /> Starting a new phase without
-          re-randomizing can lead to carryover bias. Consider re-randomizing to
-          mitigate.
-        </div>
+        <Callout status="warning">
+          Starting a new phase without re-randomizing can lead to carryover
+          bias. Consider re-randomizing to mitigate.
+        </Callout>
       )}
 
       {changeType !== "phase" && (
@@ -413,13 +419,13 @@ function ImpactTooltips({
                   )}
                 </div>
 
-                <div className="alert mt-2 mb-0 alert-info">
-                  <BsLightbulb /> Re-randomize traffic{" "}
+                <Callout status="info" mt="2" mb="0" icon={<PiLightbulb />}>
+                  Re-randomize traffic{" "}
                   {recommendStickyBucketing && switchToSB
                     ? " or use Sticky Bucketing"
                     : ""}{" "}
                   to help mitigate.
-                </div>
+                </Callout>
               </>
             ) : null}
           </div>
@@ -448,10 +454,10 @@ function ImpactTooltips({
         {!isBandit &&
           variationHopping &&
           releasePlan !== "same-phase-sticky" && (
-            <div className="alert mt-2 mb-0 alert-info">
-              <BsLightbulb /> You may be able to use Sticky Bucketing to prevent
-              variation hopping.
-            </div>
+            <Callout status="info" mt="2" mb="0" icon={<PiLightbulb />}>
+              You may be able to use Sticky Bucketing to prevent variation
+              hopping.
+            </Callout>
           )}
       </div>
 
@@ -459,7 +465,7 @@ function ImpactTooltips({
         ((variationHopping && releasePlan !== "same-phase-sticky") ||
           recommendStickyBucketing) && (
           <div className="text-right mb-2 small">
-            <DocLink docSection="stickyBucketing">
+            <DocLink useRadix={false} docSection="stickyBucketing">
               Learn about Sticky Bucketing <FaExternalLinkAlt />
             </DocLink>
           </div>
@@ -596,12 +602,17 @@ function getRecommendedRolloutData({
     lastPhase.namespace?.enabled &&
     data.namespace.name === lastPhase.namespace.name
   ) {
-    const namespaceRange = data.namespace.range ?? [0, 1];
-    const lastNamespaceRange = lastPhase.namespace.range ?? [0, 1];
-    if (
-      namespaceRange[0] > lastNamespaceRange[0] ||
-      namespaceRange[1] < lastNamespaceRange[1]
-    ) {
+    const currentRanges = data.namespace
+      ? getNamespaceRanges(data.namespace as NamespaceValue)
+      : ([[0, 1]] as [number, number][]);
+    const lastRanges = lastPhase.namespace
+      ? getNamespaceRanges(lastPhase.namespace as NamespaceValue)
+      : ([[0, 1]] as [number, number][]);
+
+    // Warn whenever any user from the previous ranges would be excluded —
+    // this covers both total-coverage reduction and range shifts that keep
+    // the same total size but move the window (e.g. [0.2,0.6] → [0.0,0.4]).
+    if (hasNarrowedRanges(lastRanges, currentRanges)) {
       decreaseNamespaceRange = true;
     }
   }

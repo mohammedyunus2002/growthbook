@@ -1,5 +1,7 @@
 import { keyBy } from "lodash";
 import omit from "lodash/omit";
+import pick from "lodash/pick";
+import pickBy from "lodash/pickBy";
 import mongoose from "mongoose";
 import uniqid from "uniqid";
 import { hasVisualChanges } from "shared/util";
@@ -8,10 +10,11 @@ import {
   VisualChangesetInterface,
   VisualChangesetURLPattern,
 } from "shared/types/visual-changeset";
+import { getLatestPhaseVariations } from "shared/experiments";
 import { ExperimentInterface, Variation } from "shared/types/experiment";
-import { ApiVisualChangeset } from "shared/types/openapi";
+import { ApiVisualChangeset } from "shared/validators";
 import { ReqContext } from "back-end/types/request";
-import { refreshSDKPayloadCache } from "back-end/src/services/features";
+import { queueSDKPayloadRefresh } from "back-end/src/services/features";
 import { visualChangesetsHaveChanges } from "back-end/src/services/experiments";
 import { ApiReqContext } from "back-end/types/api";
 import {
@@ -161,14 +164,33 @@ export async function findVisualChangesetsByExperiment(
   return visualChangesets.map(toInterface);
 }
 
+export async function findVisualChangesetsByExperimentIds(
+  experimentIds: string[],
+  organization: string,
+  limit?: number,
+): Promise<VisualChangesetInterface[]> {
+  if (!experimentIds.length) return [];
+  let query = VisualChangesetModel.find({
+    organization,
+    experiment: { $in: experimentIds },
+  });
+  if (limit && limit > 0) {
+    query = query.sort({ _id: -1 }).limit(limit);
+  }
+  return (await query).map(toInterface);
+}
+
 export async function findVisualChangesets(
   organization: string,
+  // When set, returns the newest `limit` changesets (sorted by `_id`,
+  // which embeds the creation timestamp). Omit for the full unordered set.
+  limit?: number,
 ): Promise<VisualChangesetInterface[]> {
-  return (
-    await VisualChangesetModel.find({
-      organization,
-    })
-  ).map(toInterface);
+  let query = VisualChangesetModel.find({ organization });
+  if (limit && limit > 0) {
+    query = query.sort({ _id: -1 }).limit(limit);
+  }
+  return (await query).map(toInterface);
 }
 
 export async function createVisualChange(
@@ -220,11 +242,14 @@ export async function updateVisualChange({
     throw new Error("Visual Changeset not found");
   }
 
+  // Strip `id` from the payload so callers can't rename a visual change
+  // and orphan it from the URL-param id used to look it up.
+  const safePayload = omit(payload, ["id"]);
   const visualChanges = visualChangeset.visualChanges.map((visualChange) => {
     if (visualChange.id === visualChangeId) {
       return {
         ...visualChange,
-        ...payload,
+        ...safePayload,
       };
     }
     return visualChange;
@@ -272,7 +297,8 @@ export const createVisualChangeset = async ({
       urlPatterns,
       editorUrl,
       visualChanges:
-        visualChanges || experiment.variations.map(genNewVisualChange),
+        visualChanges ||
+        getLatestPhaseVariations(experiment).map(genNewVisualChange),
     }),
   );
 
@@ -295,13 +321,27 @@ export const createVisualChangeset = async ({
   return visualChangeset;
 };
 
+type VisualChangeUpdate = Partial<VisualChange> &
+  Pick<VisualChange, "variation">;
+
+export type VisualChangesetUpdates = {
+  editorUrl?: string;
+  urlPatterns?: VisualChangesetURLPattern[];
+  visualChanges?: VisualChangeUpdate[];
+};
+
 // type guard
 const _isUpdatingVisualChanges = (
-  updates: Partial<VisualChangesetInterface>,
+  updates: VisualChangesetUpdates,
 ): updates is {
-  visualChanges: VisualChange[];
-} & Partial<VisualChangesetInterface> =>
-  updates.visualChanges !== undefined && updates.visualChanges.length > 0;
+  visualChanges: VisualChangeUpdate[];
+} & VisualChangesetUpdates => updates.visualChanges !== undefined;
+
+const UPDATABLE_VISUAL_CHANGESET_FIELDS = [
+  "editorUrl",
+  "urlPatterns",
+  "visualChanges",
+] as const;
 
 export const updateVisualChangeset = async ({
   visualChangeset,
@@ -313,17 +353,38 @@ export const updateVisualChangeset = async ({
   visualChangeset: VisualChangesetInterface;
   experiment: ExperimentInterface | null;
   context: ReqContext | ApiReqContext;
-  updates: Partial<VisualChangesetInterface>;
+  updates: VisualChangesetUpdates;
   bypassWebhooks?: boolean;
 }) => {
-  const isUpdatingVisualChanges = _isUpdatingVisualChanges(updates);
+  // pick() preserves explicit-undefined keys, which would flow into $set and
+  // could unset fields if Mongoose's casting behavior changes. Strip them.
+  const safeUpdates = pickBy(
+    pick(updates, UPDATABLE_VISUAL_CHANGESET_FIELDS),
+    (value) => value !== undefined,
+  ) as VisualChangesetUpdates;
+  const isUpdatingVisualChanges = _isUpdatingVisualChanges(safeUpdates);
 
-  // ensure new visual changes have ids assigned
+  // For partial updates, merge with the existing visual change by id so
+  // fields the caller omitted aren't wiped. Brand-new entries (no id, or an
+  // id that doesn't match an existing change) get defaults applied.
+  const existingVisualChangesById = keyBy(
+    visualChangeset.visualChanges || [],
+    "id",
+  );
   const visualChanges = isUpdatingVisualChanges
-    ? updates.visualChanges.map((vc) => ({
-        ...vc,
-        id: vc.id || uniqid("vc_"),
-      }))
+    ? safeUpdates.visualChanges.map((vc) => {
+        const existing = vc.id ? existingVisualChangesById[vc.id] : undefined;
+        if (existing) {
+          return { ...existing, ...vc };
+        }
+        return {
+          description: "",
+          css: "",
+          domMutations: [],
+          ...vc,
+          id: vc.id || uniqid("vc_"),
+        };
+      })
     : visualChangeset.visualChanges || [];
 
   const res = await VisualChangesetModel.updateOne(
@@ -333,7 +394,7 @@ export const updateVisualChangeset = async ({
     },
     {
       $set: {
-        ...updates,
+        ...safeUpdates,
         visualChanges,
       },
     },
@@ -349,13 +410,20 @@ export const updateVisualChangeset = async ({
     });
   }
 
+  const updatedVisualChangeset: VisualChangesetInterface = {
+    ...visualChangeset,
+    ...(safeUpdates.editorUrl !== undefined
+      ? { editorUrl: safeUpdates.editorUrl }
+      : {}),
+    ...(safeUpdates.urlPatterns !== undefined
+      ? { urlPatterns: safeUpdates.urlPatterns }
+      : {}),
+    visualChanges,
+  };
+
   await onVisualChangesetUpdate({
     oldVisualChangeset: visualChangeset,
-    newVisualChangeset: {
-      ...visualChangeset,
-      ...updates,
-      visualChanges,
-    },
+    newVisualChangeset: updatedVisualChangeset,
     context,
     bypassWebhooks,
   });
@@ -376,7 +444,15 @@ const onVisualChangesetCreate = async ({
 
   const payloadKeys = getPayloadKeys(context, experiment);
 
-  await refreshSDKPayloadCache(context, payloadKeys);
+  queueSDKPayloadRefresh({
+    context,
+    payloadKeys,
+    auditContext: {
+      event: "created",
+      model: "visualchangeset",
+      id: visualChangeset.id,
+    },
+  });
 };
 
 const onVisualChangesetUpdate = async ({
@@ -404,7 +480,15 @@ const onVisualChangesetUpdate = async ({
 
   const payloadKeys = getPayloadKeys(context, experiment);
 
-  await refreshSDKPayloadCache(context, payloadKeys);
+  queueSDKPayloadRefresh({
+    context,
+    payloadKeys,
+    auditContext: {
+      event: "updated",
+      model: "visualchangeset",
+      id: newVisualChangeset.id,
+    },
+  });
 };
 
 const onVisualChangesetDelete = async ({
@@ -427,7 +511,15 @@ const onVisualChangesetDelete = async ({
 
   const payloadKeys = getPayloadKeys(context, experiment);
 
-  await refreshSDKPayloadCache(context, payloadKeys);
+  queueSDKPayloadRefresh({
+    context,
+    payloadKeys,
+    auditContext: {
+      event: "deleted",
+      model: "visualchangeset",
+      id: visualChangeset.id,
+    },
+  });
 };
 
 // when an experiment adds/removes variations, we need to update the analogous

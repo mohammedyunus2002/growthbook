@@ -1,7 +1,7 @@
 import { ExperimentSnapshotReportInterface } from "shared/types/report";
 import React, { useEffect, useRef, useState } from "react";
 import { PiLink, PiCheck } from "react-icons/pi";
-import { Flex, Text } from "@radix-ui/themes";
+import { Flex } from "@radix-ui/themes";
 import { date } from "shared/dates";
 import { getAllMetricIdsFromExperiment } from "shared/experiments";
 import { getSnapshotAnalysis } from "shared/util";
@@ -15,7 +15,6 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useAuth } from "@/services/auth";
 import LinkButton from "@/ui/LinkButton";
 import SplitButton from "@/ui/SplitButton";
-import { useUser } from "@/services/UserContext";
 import HelperText from "@/ui/HelperText";
 import Markdown from "@/components/Markdown/Markdown";
 import Modal from "@/components/Modal";
@@ -29,10 +28,10 @@ import MarkdownInput from "@/components/Markdown/MarkdownInput";
 import Link from "@/ui/Link";
 import ConditionalWrapper from "@/components/ConditionalWrapper";
 import track from "@/services/track";
-import UserAvatar from "@/components/Avatar/UserAvatar";
+import Owner from "@/components/Avatar/Owner";
 import Metadata from "@/ui/Metadata";
+import Heading from "@/ui/Heading";
 import ShareStatusBadge from "@/components/Report/ShareStatusBadge";
-import metaDataStyles from "@/ui/Metadata.module.scss";
 
 type ShareLevel = "public" | "organization" | "private";
 type EditLevel = "organization" | "private";
@@ -71,9 +70,6 @@ export default function ReportMetaInfo({
     : `${HOST}/report/${report.id}`;
 
   const { apiCall } = useAuth();
-  const { getUserDisplay } = useUser();
-  const ownerName =
-    (report.userId ? getUserDisplay(report.userId, false) : "") || "";
 
   const { performCopy, copySuccess } = useCopyToClipboard({
     timeout: 800,
@@ -109,6 +105,7 @@ export default function ReportMetaInfo({
   const variations = report.experimentMetadata.variations.map(
     (variation, i) => ({
       id: variation.id,
+      index: i,
       name: variation.name,
       weight:
         report.experimentMetadata.phases?.[snapshot?.phase || 0]
@@ -269,41 +266,41 @@ export default function ReportMetaInfo({
       <div className="mb-3">
         <div className="d-flex">
           <div className="flex-1">
-            <h1 className="mt-1 mb-3 mr-2">
+            <Heading
+              as="h1"
+              size="xl"
+              weight="semibold"
+              color="text-high"
+              overflowWrap="anywhere"
+              mt="1"
+              mb="4"
+              mr="2"
+            >
               {report.title}
               {showEditControls && (
-                <>
-                  <div
-                    className="d-inline-block ml-2 position-relative"
-                    style={{ top: -2 }}
-                  >
-                    <ShareStatusBadge
-                      shareLevel={report.shareLevel}
-                      editLevel={report.editLevel}
-                      isOwner={isOwner}
-                    />
-                  </div>
-                </>
+                <div
+                  className="d-inline-block ml-2 position-relative"
+                  style={{ top: -2 }}
+                >
+                  <ShareStatusBadge
+                    shareLevel={report.shareLevel}
+                    editLevel={report.editLevel}
+                    isOwner={isOwner}
+                  />
+                </div>
               )}
-            </h1>
+            </Heading>
 
             <Flex gap="3" mt="2" mb="1">
               {showEditControls && (
                 <Metadata
                   label="Report by"
                   value={
-                    <>
-                      {ownerName !== "" && (
-                        <UserAvatar name={ownerName} size="sm" variant="soft" />
-                      )}
-                      <Text
-                        weight="regular"
-                        className={metaDataStyles.valueColor}
-                        ml="1"
-                      >
-                        {ownerName === "" ? "None" : ownerName}
-                      </Text>
-                    </>
+                    <Owner
+                      ownerId={report.userId}
+                      gap="1"
+                      textColor="text-mid"
+                    />
                   }
                 />
               )}
@@ -438,9 +435,12 @@ export default function ReportMetaInfo({
             mutate?.();
           })}
           header={`Edit "${report.title}"`}
-          useRadixButton={true}
         >
-          <Field label="Report Name" {...generalForm.register("title")} />
+          <Field
+            size="legacy"
+            label="Report Name"
+            {...generalForm.register("title")}
+          />
 
           <label>Description</label>
           <MarkdownInput
@@ -457,7 +457,6 @@ export default function ReportMetaInfo({
           close={() => setShareModalOpen(false)}
           closeCta="Close"
           header={`Share "${report.title}"`}
-          useRadixButton={true}
           secondaryCTA={shareLinkButton}
         >
           <div className="mb-3">
@@ -481,6 +480,7 @@ export default function ReportMetaInfo({
           </div>
 
           <SelectField
+            size="legacy"
             label="View access"
             value={shareLevel}
             onChange={(v: ShareLevel) => setShareLevel(v)}
@@ -510,6 +510,7 @@ export default function ReportMetaInfo({
           </div>
 
           <SelectField
+            size="legacy"
             label="Edit access"
             value={editLevel}
             onChange={(v: EditLevel) => setEditLevel(v)}

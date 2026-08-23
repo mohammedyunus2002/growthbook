@@ -1,5 +1,6 @@
 import { ExperimentSnapshotInterface } from "shared/types/experiment-snapshot";
 import { ExperimentSnapshotReportInterface } from "shared/types/report";
+import { getEffectiveLookbackOverride } from "shared/experiments";
 import { getSnapshotAnalysis } from "shared/util";
 import { ago, date, datetime, getValidDate } from "shared/dates";
 import React, { RefObject, useEffect, useMemo, useState } from "react";
@@ -13,9 +14,9 @@ import DifferenceTypeChooser from "@/components/Experiment/DifferenceTypeChooser
 import { useAuth } from "@/services/auth";
 import Callout from "@/ui/Callout";
 import Button from "@/ui/Button";
-import { DropdownMenu } from "@/ui/DropdownMenu";
 import Metadata from "@/ui/Metadata";
 import Link from "@/ui/Link";
+import { Popover } from "@/ui/Popover";
 import { useDefinitions } from "@/services/DefinitionsContext";
 
 const numberFormatter = Intl.NumberFormat();
@@ -66,23 +67,22 @@ export default function ReportAnalysisSettingsBar({
     ? getDatasourceById(report.experimentAnalysisSettings.datasource)?.settings
     : undefined;
 
+  const lookbackOverride = getEffectiveLookbackOverride(
+    report.experimentAnalysisSettings.attributionModel,
+    report.experimentAnalysisSettings.lookbackOverride,
+  );
+
   const userIdType = datasourceSettings?.queries?.exposure?.find(
     (e) => e.id === report.experimentAnalysisSettings.exposureQueryId,
   )?.userIdType;
 
   const totalUnits = useMemo(() => {
-    const healthVariationUnits =
-      snapshot?.health?.traffic?.overall?.variationUnits;
-    if (healthVariationUnits && healthVariationUnits.length > 0) {
-      return healthVariationUnits.reduce((acc, a) => acc + a, 0);
-    }
-    // Fallback to using results for total units if health units not available
     let totalUsers = 0;
     analysis?.results?.forEach((result) => {
       result?.variations?.forEach((v) => (totalUsers += v?.users || 0));
     });
     return totalUsers;
-  }, [analysis?.results, snapshot?.health?.traffic?.overall?.variationUnits]);
+  }, [analysis?.results]);
 
   // Convert userIdType to display name (e.g. "user_id" -> "User Ids")
   const unitDisplayName = userIdType
@@ -101,49 +101,54 @@ export default function ReportAnalysisSettingsBar({
     <>
       <div className="mb-1 d-flex align-items-center justify-content-between">
         <div className="h3 mb-1">Analysis</div>
-        <DropdownMenu
+        <Popover
           trigger={
             <Link>
               <PiEye className="mr-1" />
               View details
             </Link>
           }
-          menuPlacement="end"
-        >
-          <div style={{ minWidth: 250 }} className="p-2">
-            <h5>Results computed with:</h5>
-            <Metadata
-              label="Engine"
-              value={
-                analysis?.settings?.statsEngine === "frequentist"
-                  ? "Frequentist"
-                  : "Bayesian"
-              }
-            />
-            <Metadata
-              label="CUPED"
-              value={
-                analysis?.settings?.regressionAdjusted ? "Enabled" : "Disabled"
-              }
-            />
-            {analysis?.settings?.statsEngine === "frequentist" && (
+          align="end"
+          content={
+            <div style={{ minWidth: 250 }}>
+              <h5>Results computed with:</h5>
               <Metadata
-                label="Sequential"
+                label="Engine"
                 value={
-                  analysis?.settings?.sequentialTesting ? "Enabled" : "Disabled"
+                  analysis?.settings?.statsEngine === "frequentist"
+                    ? "Frequentist"
+                    : "Bayesian"
                 }
               />
-            )}
-            {snapshot.runStarted && (
-              <div className="text-right mt-3">
+              <Metadata
+                label="CUPED"
+                value={
+                  analysis?.settings?.regressionAdjusted
+                    ? "Enabled"
+                    : "Disabled"
+                }
+              />
+              {analysis?.settings?.statsEngine === "frequentist" && (
                 <Metadata
-                  label="Run date"
-                  value={datetime(snapshot.runStarted)}
+                  label="Sequential"
+                  value={
+                    analysis?.settings?.sequentialTesting
+                      ? "Enabled"
+                      : "Disabled"
+                  }
                 />
-              </div>
-            )}
-          </div>
-        </DropdownMenu>
+              )}
+              {snapshot.runStarted && (
+                <div className="text-right mt-3">
+                  <Metadata
+                    label="Run date"
+                    value={datetime(snapshot.runStarted)}
+                  />
+                </div>
+              )}
+            </div>
+          }
+        />
       </div>
       <div className="py-1 d-flex mb-2">
         <div className="row align-items-center" style={{ gap: "0.5rem 1rem" }}>
@@ -184,6 +189,20 @@ export default function ReportAnalysisSettingsBar({
               </div>
             </div>
           </div>
+          {lookbackOverride ? (
+            <div className="col-auto d-flex align-items-end">
+              <div>
+                <div className="uppercase-title text-muted">
+                  Lookback Enforced
+                </div>
+                <div className="relative">
+                  {lookbackOverride.type === "date"
+                    ? `${date(lookbackOverride.value, "UTC")} - ${snapshot.settings.endDate ? date(snapshot.settings.endDate, "UTC") : "now"}`
+                    : `${lookbackOverride.value} ${lookbackOverride.valueUnit}`}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
         <div className="row flex-grow-1 flex-shrink-0 pt-1 px-2 justify-content-end align-items-center">
           <div className="col-auto mr-2" style={{ fontSize: "12px" }}>
@@ -217,7 +236,7 @@ export default function ReportAnalysisSettingsBar({
                 model={snapshot}
                 cancelEndpoint={`/report/${report.id}/cancel`}
                 color="outline-primary"
-                useRadixButton={true}
+                radixVariant="soft"
                 onSubmit={async () => {
                   try {
                     const res = await apiCall<{
@@ -241,7 +260,7 @@ export default function ReportAnalysisSettingsBar({
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
+                size="md"
                 ml="2"
                 onClick={() => setEditAnalysisOpen(true)}
               >

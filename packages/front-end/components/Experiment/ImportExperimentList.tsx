@@ -1,9 +1,13 @@
-import Link from "next/link";
 import React, { FC, useCallback, useState } from "react";
 import { PastExperimentsInterface } from "shared/types/past-experiments";
 import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { getValidDate, ago, date, datetime, daysBetween } from "shared/dates";
-import { isProjectListValidForProject } from "shared/util";
+import {
+  isProjectListValidForProject,
+  parseIntWithDefault,
+  parseOptionalInt,
+} from "shared/util";
+import Link from "@/ui/Link";
 import { useAddComputedFields, useSearch } from "@/services/search";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import { useAuth } from "@/services/auth";
@@ -82,7 +86,10 @@ const ImportExperimentList: FC<{
   const filterResults = useCallback(
     (items: typeof pastExpArr) => {
       const rows = items.filter((e) => {
-        if (minUsersFilter && e.users < (parseInt(minUsersFilter) || 0)) {
+        if (
+          minUsersFilter &&
+          e.users < parseIntWithDefault(minUsersFilter, 0)
+        ) {
           return false;
         }
         if (alreadyImportedFilter) {
@@ -101,15 +108,14 @@ const ImportExperimentList: FC<{
 
         if (
           minLengthFilter &&
-          daysBetween(e.startDate, e.endDate) < (parseInt(minLengthFilter) || 0)
+          daysBetween(e.startDate, e.endDate) <
+            parseIntWithDefault(minLengthFilter, 0)
         ) {
           return false;
         }
 
-        if (
-          minVariationsFilter &&
-          e.numVariations < parseInt(minVariationsFilter)
-        ) {
+        const minVariations = parseOptionalInt(minVariationsFilter);
+        if (minVariations !== undefined && e.numVariations < minVariations) {
           return false;
         }
 
@@ -161,7 +167,7 @@ const ImportExperimentList: FC<{
     return <LoadingOverlay />;
   }
   if (error) {
-    return <div className="alert alert-error">{error?.message}</div>;
+    return <Callout status="error">{error?.message}</Callout>;
   }
   if (!data || !ready) {
     return <LoadingOverlay />;
@@ -196,6 +202,7 @@ const ImportExperimentList: FC<{
         <div className="col-auto">
           {changeDatasource && supportedDatasources.length > 1 ? (
             <SelectField
+              size="legacy"
               value={data.experiments.datasource}
               options={supportedDatasources.map((d) => {
                 const isDefaultDataSource = d.id === defaultDataSource;
@@ -248,6 +255,7 @@ const ImportExperimentList: FC<{
                 }}
               >
                 <RunQueriesButton
+                  useRadixButton={false}
                   cta={
                     data.experiments.latestData ? "Get New Data" : "Run Query"
                   }
@@ -383,6 +391,7 @@ const ImportExperimentList: FC<{
             <div className="col-auto">
               <label className="small mb-0">Filter</label>
               <Field
+                size="legacy"
                 placeholder="Search..."
                 type="search"
                 {...searchInputProps}
@@ -390,6 +399,7 @@ const ImportExperimentList: FC<{
             </div>
             <div className="col-auto">
               <Field
+                size="legacy"
                 label="# Units"
                 labelClassName="small mb-0"
                 type="number"
@@ -405,6 +415,7 @@ const ImportExperimentList: FC<{
             </div>
             <div className="col-auto">
               <Field
+                size="legacy"
                 label="Test Duration"
                 labelClassName="small mb-0"
                 type="number"
@@ -421,6 +432,7 @@ const ImportExperimentList: FC<{
             </div>
             <div className="col-auto">
               <Field
+                size="legacy"
                 label="# Variations"
                 labelClassName="small mb-0"
                 type="number"
@@ -435,29 +447,19 @@ const ImportExperimentList: FC<{
               />
             </div>
             <div className="col-auto">
-              <Field
+              <SelectField
+                size="legacy"
                 label="Status"
                 labelClassName="small mb-0"
                 options={[
-                  {
-                    display: "All",
-                    value: "",
-                  },
-                  {
-                    display: "Running",
-                    value: "running",
-                  },
-                  {
-                    display: "Stopped",
-                    value: "stopped",
-                  },
+                  { label: "All", value: "" },
+                  { label: "Running", value: "running" },
+                  { label: "Stopped", value: "stopped" },
                 ]}
                 value={statusFilter}
-                onChange={(e) => {
-                  setStatusFilter(
-                    (e.target.value as "" | "stopped" | "running") || "",
-                  );
-                }}
+                onChange={(value) =>
+                  setStatusFilter((value as "" | "stopped" | "running") || "")
+                }
               />
             </div>
             <div className="col-auto align-self-center">
@@ -556,35 +558,42 @@ const ImportExperimentList: FC<{
                           className={`btn btn-primary`}
                           onClick={(ev) => {
                             ev.preventDefault();
+                            const variations = e.variationKeys.map(
+                              (vKey, i) => {
+                                let vName = e.variationNames?.[i] || vKey;
+                                // If the name is an integer, rename 0 to "Control" and anything else to "Variation {name}"
+                                if (vName.match(/^[0-9]{1,2}$/)) {
+                                  vName =
+                                    vName === "0"
+                                      ? "Control"
+                                      : `Variation ${vName}`;
+                                }
+                                return {
+                                  id: generateVariationId(),
+                                  name: vName,
+                                  key: vKey,
+                                  screenshots: [],
+                                  description: "",
+                                };
+                              },
+                            );
                             const importObj: Partial<ExperimentInterfaceStringDates> =
                               {
                                 name: e.experimentName || e.trackingKey,
                                 trackingKey: e.trackingKey,
                                 datasource: data?.experiments?.datasource,
                                 exposureQueryId: e.exposureQueryId || "",
-                                variations: e.variationKeys.map((vKey, i) => {
-                                  let vName = e.variationNames?.[i] || vKey;
-                                  // If the name is an integer, rename 0 to "Control" and anything else to "Variation {name}"
-                                  if (vName.match(/^[0-9]{1,2}$/)) {
-                                    vName =
-                                      vName === "0"
-                                        ? "Control"
-                                        : `Variation ${vName}`;
-                                  }
-                                  return {
-                                    name: vName,
-                                    screenshots: [],
-                                    description: "",
-                                    key: vKey,
-                                    id: generateVariationId(),
-                                  };
-                                }),
+                                variations,
                                 phases: [
                                   {
                                     coverage: 1,
                                     name: "Main",
                                     reason: "",
                                     variationWeights: e.weights,
+                                    variations: variations.map((v) => ({
+                                      id: v.id,
+                                      status: "active" as const,
+                                    })),
                                     dateStarted:
                                       getValidDate(e.startDate)
                                         .toISOString()
@@ -621,7 +630,7 @@ const ImportExperimentList: FC<{
               {items.length <= 0 && totalRows > 0 && (
                 <tr>
                   <td colSpan={8}>
-                    <div className="alert alert-info">
+                    <Callout status="info">
                       <em>
                         No experiments match your current filters.{" "}
                         <a
@@ -634,7 +643,7 @@ const ImportExperimentList: FC<{
                           Clear all filters
                         </a>
                       </em>
-                    </div>
+                    </Callout>
                   </td>
                 </tr>
               )}

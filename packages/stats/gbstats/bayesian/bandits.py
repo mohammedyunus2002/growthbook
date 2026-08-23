@@ -6,7 +6,7 @@ import numpy as np
 import random
 from pydantic.dataclasses import dataclass
 
-from gbstats.models.results import BanditResult, SingleVariationResult
+from gbstats.models.results import ResponseCI, BanditResult, SingleVariationResult
 from gbstats.models.statistics import (
     SampleMeanStatistic,
     RatioStatistic,
@@ -32,7 +32,7 @@ class BanditConfig(BayesianConfig):
 class BanditResponse:
     users: Optional[List[float]]
     cr: Optional[List[float]]
-    ci: Optional[List[List[float]]]
+    ci: Optional[List[ResponseCI]]
     bandit_weights: Optional[List[float]]
     best_arm_probabilities: Optional[List[float]]
     seed: int
@@ -174,9 +174,24 @@ class Bandits(ABC):
         else:
             p = best_arm_probabilities.copy()
         update_message = "successfully updated"
-        p[p < self.config.min_variation_weight] = self.config.min_variation_weight
-        p /= sum(p)
-        credible_intervals = [
+        # Apply the per-variation minimum weight as an additive floor on the
+        # probability simplex rather than clipping and renormalizing. Clipping
+        # (p[p < f] = f; p /= sum(p)) raises every below-floor arm up to f and
+        # then shrinks all survivors proportionally, which biases the Thompson
+        # allocation away from the posterior. The additive form
+        #     p_i = f + (1 - n * f) * w_i        (w = normalized Thompson weights)
+        # guarantees p_i >= f and sum(p_i) == 1 while preserving the posterior
+        # ordering and the relative spacing of the arms above the floor.
+        # Clamp negatives to 0: a negative floor would make (1 - n*f) > 1 and
+        # push weights outside [0, 1]; treat it as no floor (pure Thompson).
+        f = max(0.0, self.config.min_variation_weight)
+        total_floor = f * self.num_variations
+        if total_floor >= 1.0:
+            # floors cannot all fit on the simplex; fall back to uniform weights
+            p = np.full(self.num_variations, 1.0 / self.num_variations)
+        else:
+            p = f + (1.0 - total_floor) * (p / np.sum(p))
+        credible_intervals: List[ResponseCI] = [
             gaussian_credible_interval(mn, s, self.config.alpha)
             for mn, s in zip(self.variation_means, np.sqrt(self.posterior_variance))
         ]

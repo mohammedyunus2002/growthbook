@@ -15,10 +15,12 @@ import track, { TrackEventProps } from "@/services/track";
 import ConditionalWrapper from "@/components/ConditionalWrapper";
 import ErrorDisplay from "@/ui/ErrorDisplay";
 import Button from "@/ui/Button";
+import Callout from "@/ui/Callout";
 import LoadingOverlay from "./LoadingOverlay";
 import Portal from "./Modal/Portal";
 import Tooltip from "./Tooltip/Tooltip";
 import { DocLink, DocSection } from "./DocLink";
+import styles from "./Modal.module.scss";
 
 type ModalProps = {
   header?: "logo" | string | ReactNode | boolean;
@@ -47,7 +49,7 @@ type ModalProps = {
   docSection?: DocSection;
   error?: string;
   loading?: boolean;
-  size?: "md" | "lg" | "max" | "fill";
+  size?: "md" | "lg" | "xl" | "max" | "fill";
   sizeY?: "max" | "fill";
   inline?: boolean;
   overflowAuto?: boolean;
@@ -71,7 +73,11 @@ type ModalProps = {
   aboveBodyContent?: ReactNode;
   useRadixButton?: boolean;
   borderlessHeader?: boolean;
+  backgroundlessHeader?: boolean;
   borderlessFooter?: boolean;
+  onBackdropClick?: () => void;
+  // Enables closing the modal via backdrop click and Escape key.
+  dismissible?: boolean;
 };
 const Modal: FC<ModalProps> = ({
   header = "logo",
@@ -117,10 +123,13 @@ const Modal: FC<ModalProps> = ({
   allowlistedTrackingEventProps = {},
   modalUuid: _modalUuid,
   trackOnSubmit = true,
-  useRadixButton,
+  useRadixButton = true,
   aboveBodyContent = null,
   borderlessHeader = false,
+  backgroundlessHeader = false,
   borderlessFooter = false,
+  onBackdropClick,
+  dismissible = false,
 }) => {
   const [modalUuid] = useState(_modalUuid || uuidv4());
   const [loading, setLoading] = useState(false);
@@ -128,6 +137,7 @@ const Modal: FC<ModalProps> = ({
   const [isSuccess, setIsSuccess] = useState(false);
 
   const bodyRef = useRef<HTMLDivElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
   const scrollToTop = () => {
     setTimeout(() => {
@@ -176,11 +186,18 @@ const Modal: FC<ModalProps> = ({
       style={{
         height: sizeY === "max" ? "95vh" : "",
         maxHeight: sizeY ? "" : size === "fill" ? "" : "95vh",
+        ...(sizeY
+          ? { display: "flex" as const, flexDirection: "column" as const }
+          : {}),
       }}
     >
       {loading && <LoadingOverlay />}
       {header ? (
-        <div className={clsx("modal-header", headerClassName)}>
+        <div
+          className={clsx("modal-header", headerClassName, {
+            [styles["modal-header-backgroundless"]]: backgroundlessHeader,
+          })}
+        >
           <div>
             <h4 className="modal-title">
               {header === "logo" ? (
@@ -193,7 +210,7 @@ const Modal: FC<ModalProps> = ({
                 header
               )}
               {docSection && (
-                <DocLink docSection={docSection}>
+                <DocLink useRadix={false} docSection={docSection}>
                   <Tooltip body="View Documentation" className="ml-1 w-4 h-4" />
                 </DocLink>
               )}
@@ -237,21 +254,30 @@ const Modal: FC<ModalProps> = ({
       )}
       <div
         className={`modal-body ${bodyClassName} ${
-          !header && (!close || !showHeaderCloseButton) ? "ml-4 mt-2" : ""
+          !header && (!close || !showHeaderCloseButton) ? "mt-2" : ""
         }`}
         ref={bodyRef}
-        style={
-          overflowAuto
+        style={{
+          ...(overflowAuto
             ? {
                 overflowY: "auto",
+                overflowX: "hidden",
                 scrollBehavior: "smooth",
                 marginBottom: stickyFooter ? "100px" : undefined,
               }
-            : {}
-        }
+            : {}),
+          ...(sizeY
+            ? {
+                flex: 1,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+              }
+            : {}),
+        }}
       >
         {isSuccess ? (
-          <div className="alert alert-success">{successMessage}</div>
+          <Callout status="success">{successMessage}</Callout>
         ) : (
           <>
             {aboveBodyContent}
@@ -322,7 +348,12 @@ const Modal: FC<ModalProps> = ({
                 className={fullWidthSubmit ? "w-100" : ""}
               >
                 {useRadixButton ? (
-                  <Button type="submit" disabled={!ctaEnabled} ml="3">
+                  <Button
+                    type="submit"
+                    disabled={!ctaEnabled}
+                    ml="3"
+                    color={submitColor === "danger" ? "red" : undefined}
+                  >
                     {cta}
                   </Button>
                 ) : (
@@ -383,8 +414,29 @@ const Modal: FC<ModalProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    if (!dismissible || !close || !open) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+
+      const openModals = Array.from(document.querySelectorAll(".modal.show"));
+      const topMostOpenModal = openModals[openModals.length - 1];
+      if (topMostOpenModal !== modalRef.current) return;
+
+      event.preventDefault();
+      close();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [dismissible, close, open]);
+
   const modalHtml = (
     <div
+      ref={modalRef}
       className={clsx("modal", { show: open })}
       style={{
         display: open ? "block" : "none",
@@ -392,6 +444,13 @@ const Modal: FC<ModalProps> = ({
         zIndex: inline ? 1 : increasedElevation ? 1550 : undefined,
       }}
       onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          if (onBackdropClick) {
+            onBackdropClick();
+          } else if (dismissible && close) {
+            close();
+          }
+        }
         e.stopPropagation();
       }}
     >
@@ -400,9 +459,11 @@ const Modal: FC<ModalProps> = ({
         style={
           size === "max"
             ? { width: "95vw", maxWidth: 1400, margin: "2vh auto" }
-            : size === "fill"
-              ? { width: "100%", maxWidth: "100%" }
-              : {}
+            : size === "xl"
+              ? { width: "95vw", maxWidth: 1100 }
+              : size === "fill"
+                ? { width: "100%", maxWidth: "100%" }
+                : {}
         }
       >
         {submit && !isSuccess ? (

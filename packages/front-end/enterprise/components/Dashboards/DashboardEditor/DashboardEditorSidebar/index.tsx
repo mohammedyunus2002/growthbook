@@ -1,14 +1,16 @@
-import { Box, Flex, IconButton, Text } from "@radix-ui/themes";
+import { Box, Flex, IconButton } from "@radix-ui/themes";
 import {
   DashboardBlockInterfaceOrData,
   DashboardBlockInterface,
   DashboardBlockType,
+  DashboardInterface,
   dashboardBlockHasIds,
 } from "shared/enterprise";
 import React, { useMemo, useState } from "react";
 import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { isDefined } from "shared/util";
 import { PiDotsThreeVertical, PiPlusCircle } from "react-icons/pi";
+import Tooltip from "@/components/Tooltip/Tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/ui/Tabs";
 import {
   DropdownMenuItem,
@@ -21,16 +23,14 @@ import {
   DASHBOARD_WORKSPACE_NAV_HEIGHT,
 } from "@/enterprise/components/Dashboards/DashboardWorkspace";
 import Button from "@/ui/Button";
-import useExperimentPipelineMode from "@/hooks/useExperimentPipelineMode";
-import { BLOCK_SUBGROUPS, BLOCK_TYPE_INFO, isBlockTypeAllowed } from "..";
+import {
+  BLOCK_SUBGROUPS,
+  BLOCK_TYPE_INFO,
+  GENERAL_DASHBOARD_BLOCK_TYPES,
+  getAvailableBlockTypes,
+} from "@/enterprise/components/Dashboards/DashboardEditor/dashboardBlockTypes";
+import Text from "@/ui/Text";
 import EditSingleBlock from "./EditSingleBlock";
-
-// Block types that are allowed in general dashboards (non-experiment specific)
-const GENERAL_DASHBOARD_BLOCK_TYPES: DashboardBlockType[] = [
-  "markdown",
-  "sql-explorer",
-  "metric-explorer",
-];
 
 function moveBlocks<T>(
   blocks: Array<T>,
@@ -45,11 +45,38 @@ function moveBlocks<T>(
   ];
 }
 
+function BlockTypePopoverContent({
+  blockType,
+}: {
+  blockType: DashboardBlockType;
+}) {
+  const blockInfo = BLOCK_TYPE_INFO[blockType];
+
+  return (
+    <Flex direction="column" gap="3" style={{ width: 300 }}>
+      <Flex align="center" gap="2">
+        <Avatar radius="small" color="indigo" variant="soft" size="sm">
+          {blockInfo.icon}
+        </Avatar>
+        <Text size="lg" weight="semibold" color="text-high">
+          {blockInfo.name}
+        </Text>
+      </Flex>
+      {blockInfo.description && (
+        <Text as="div" size="md" color="text-mid">
+          {blockInfo.description}
+        </Text>
+      )}
+    </Flex>
+  );
+}
+
 interface Props {
   dashboardId: string;
   projects: string[];
   experiment: ExperimentInterfaceStringDates | null;
   isGeneralDashboard?: boolean;
+  dashboardGlobalControls?: DashboardInterface["globalControls"];
   open: boolean;
   cancel: () => void;
   submit: () => void;
@@ -63,7 +90,7 @@ interface Props {
   setStagedBlock: React.Dispatch<
     DashboardBlockInterfaceOrData<DashboardBlockInterface> | undefined
   >;
-  addBlockType: (bType: DashboardBlockType, i?: number) => void;
+  addBlockType: (bType: DashboardBlockType) => void;
   focusBlock: (index: number) => void;
   editBlock: (index: number) => void;
   duplicateBlock: (index: number) => void;
@@ -75,6 +102,7 @@ export default function DashboardEditorSidebar({
   dashboardId,
   experiment,
   isGeneralDashboard = false,
+  dashboardGlobalControls,
   open,
   cancel,
   submit,
@@ -95,11 +123,6 @@ export default function DashboardEditorSidebar({
     number | undefined
   >(undefined);
 
-  // TODO(incremental-refresh): remove when dimensions supported in dashboard
-  const experimentalRefreshMode = useExperimentPipelineMode(
-    experiment ?? undefined,
-  );
-
   const resetDragState = () => {
     setDraggingBlockIndex(undefined);
     setPreviewBlockPlacement(undefined);
@@ -119,20 +142,16 @@ export default function DashboardEditorSidebar({
   }, [blocks, draggingBlockIndex, previewBlockPlacement]);
 
   const blockNavigatorEnabled = false;
+  const availableBlockTypes = useMemo(
+    () => new Set(getAvailableBlockTypes(isGeneralDashboard)),
+    [isGeneralDashboard],
+  );
 
   const addBlocksContent = (
     <Flex direction="column" align="start" px="4" pb="4" pt="2" gap="5">
-      <Text style={{ color: "var(--color-text-mid)" }}>
-        Click to add blocks.
-      </Text>
       {BLOCK_SUBGROUPS.map(([subgroup, blockTypes], i) => {
-        // Filter block types based on dashboard type
-        const allowedBlockTypes = blockTypes.filter((bType) =>
-          isBlockTypeAllowed(
-            bType,
-            isGeneralDashboard,
-            experimentalRefreshMode === "incremental-refresh",
-          ),
+        const allowedBlockTypes = blockTypes.filter((blockType) =>
+          availableBlockTypes.has(blockType),
         );
 
         // Don't render the subgroup if no block types are allowed
@@ -148,61 +167,66 @@ export default function DashboardEditorSidebar({
             key={`${subgroup}-${i}`}
             width="100%"
           >
-            {/* We hide the `Other` subgroup title for general dashboards since those are the only available options */}
-            {experiment ? (
-              <Text
-                weight="medium"
-                size="1"
-                style={{
-                  color: "var(--color-text-high)",
-                  textTransform: "uppercase",
-                }}
-              >
-                {subgroup}
-              </Text>
-            ) : null}
+            <Text
+              weight="medium"
+              size="sm"
+              color="text-high"
+              textTransform="uppercase"
+            >
+              {subgroup}
+            </Text>
 
-            {allowedBlockTypes.map((bType) => (
-              <a
-                href="#"
-                key={bType}
-                onClick={(e) => {
-                  e.preventDefault();
-                  addBlockType(bType);
-                }}
-                style={{
-                  display: "block",
-                  padding: "5px",
-                  margin: "0 -5px",
-                  width: "100%",
-                  borderRadius: "6px",
-                }}
-                className="hover-show no-underline hover-border-violet"
-              >
-                <Flex align="center">
-                  <Avatar
-                    radius="small"
-                    color="indigo"
-                    variant="soft"
-                    mr="2"
-                    size="sm"
+            {allowedBlockTypes.map((bType) => {
+              return (
+                <Tooltip
+                  key={bType}
+                  body={<BlockTypePopoverContent blockType={bType} />}
+                  tipPosition="left"
+                  tipMinWidth="300px"
+                  usePortal
+                  flipTheme={false}
+                  style={{ display: "block", width: "100%" }}
+                >
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      addBlockType(bType);
+                    }}
+                    style={{
+                      display: "block",
+                      padding: "5px",
+                      margin: "0 -5px",
+                      width: "100%",
+                      borderRadius: "6px",
+                    }}
+                    className="hover-show no-underline hover-border-violet"
                   >
-                    {BLOCK_TYPE_INFO[bType].icon}
-                  </Avatar>
-                  <Text
-                    size="2"
-                    weight="regular"
-                    style={{ color: "var(--color-text-high" }}
-                  >
-                    {BLOCK_TYPE_INFO[bType].name}
-                  </Text>
-                  <div style={{ flex: 1 }} />
-                  <Text color="violet" className="ml-auto show-target instant">
-                    <PiPlusCircle /> Add
-                  </Text>
-                </Flex>
-              </a>
-            ))}
+                    <Flex align="center">
+                      <Avatar
+                        radius="small"
+                        color="indigo"
+                        variant="soft"
+                        mr="2"
+                        size="sm"
+                      >
+                        {BLOCK_TYPE_INFO[bType].icon}
+                      </Avatar>
+                      <Text size="md" weight="regular" color="text-high">
+                        {BLOCK_TYPE_INFO[bType].name}
+                      </Text>
+                      <div style={{ flex: 1 }} />
+                      <span
+                        style={{ color: "var(--violet-11)" }}
+                        className="ml-auto show-target instant"
+                      >
+                        <PiPlusCircle /> Add
+                      </span>
+                    </Flex>
+                  </a>
+                </Tooltip>
+              );
+            })}
           </Flex>
         );
       })}
@@ -245,6 +269,7 @@ export default function DashboardEditorSidebar({
               dashboardId={dashboardId}
               experiment={experiment}
               projects={projects}
+              dashboardGlobalControls={dashboardGlobalControls}
               cancel={cancel}
               submit={submit}
               block={stagedBlock}
@@ -261,7 +286,7 @@ export default function DashboardEditorSidebar({
         ) : !blockNavigatorEnabled ? (
           <div style={{ width: "440px" }}>
             <Box px="4" pt="4">
-              <Text size="3" weight="bold">
+              <Text size="lg" weight="semibold">
                 Add a Block
               </Text>
             </Box>
@@ -276,7 +301,7 @@ export default function DashboardEditorSidebar({
             <TabsContent value="add-block">{addBlocksContent}</TabsContent>
             <TabsContent value="block-navigator">
               <Flex direction="column" align="start" p="2">
-                <Text style={{ color: "var(--color-text-mid)" }} my="3">
+                <Text color="text-mid" my="3">
                   Drag to reorder blocks. Click to bring block into focus.
                 </Text>
                 {displayBlocks.map((block, i) => (
@@ -331,11 +356,12 @@ export default function DashboardEditorSidebar({
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
+                        color="red"
                         onClick={() => {
                           deleteBlock(i);
                         }}
                       >
-                        <Text color="red">Delete</Text>
+                        Delete
                       </DropdownMenuItem>
                     </DropdownMenu>
                   </Flex>

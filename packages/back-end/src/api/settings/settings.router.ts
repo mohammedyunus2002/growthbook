@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { OpenApiRoute } from "back-end/src/util/handler";
 import { getSettings } from "./getSettings";
+import { putApprovalSettings } from "./putApprovalSettings";
 
-const router = Router();
-
-router.get("/", getSettings);
-
-export default router;
+export const settingsRoutes: OpenApiRoute[] = [
+  getSettings,
+  putApprovalSettings,
+];

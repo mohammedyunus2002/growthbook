@@ -1,4 +1,5 @@
 import { FC, useMemo, useState } from "react";
+import { MAX_DESCRIPTION_LENGTH } from "shared/constants";
 import { useForm } from "react-hook-form";
 import { DimensionInterface } from "shared/types/dimension";
 import { FaExternalLinkAlt } from "react-icons/fa";
@@ -11,7 +12,7 @@ import Field from "@/components/Forms/Field";
 import SelectField from "@/components/Forms/SelectField";
 import EditSqlModal from "@/components/SchemaBrowser/EditSqlModal";
 import Code from "@/components/SyntaxHighlighting/Code";
-import SelectOwner from "../Owner/SelectOwner";
+import SelectOwner from "@/components/Owner/SelectOwner";
 
 const DimensionForm: FC<{
   close: () => void;
@@ -71,6 +72,7 @@ const DimensionForm: FC<{
         />
       )}
       <Modal
+        useRadixButton={false}
         trackingEventModalType=""
         close={close}
         open={true}
@@ -91,14 +93,20 @@ const DimensionForm: FC<{
           mutateDefinitions();
         })}
       >
-        <Field label="Name" required {...form.register("name")} />
+        <Field size="legacy" label="Name" required {...form.register("name")} />
         <SelectOwner
-          resourceType="dimension"
           value={form.watch("owner")}
           onChange={(v) => form.setValue("owner", v)}
         />
-        <Field label="Description" textarea {...form.register("description")} />
+        <Field
+          size="legacy"
+          label="Description"
+          textarea
+          maxLength={MAX_DESCRIPTION_LENGTH}
+          {...form.register("description")}
+        />
         <SelectField
+          size="legacy"
           label="Data Source"
           required
           value={form.watch("datasource")}
@@ -112,6 +120,7 @@ const DimensionForm: FC<{
         />
         {dsProps?.userIds && (
           <SelectField
+            size="legacy"
             label="Identifier Type"
             required
             value={userIdType}
@@ -143,6 +152,7 @@ const DimensionForm: FC<{
           </div>
         ) : (
           <Field
+            size="legacy"
             label="Event Condition"
             required
             {...form.register("sql")}

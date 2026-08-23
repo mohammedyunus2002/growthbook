@@ -1,5 +1,6 @@
 import { SegmentInterface } from "shared/types/segment";
 import { segmentValidator } from "shared/validators";
+import { UpdateProps } from "shared/types/base-model";
 import { getConfigSegments, usingFileConfig } from "back-end/src/init/config";
 import { STORE_SEGMENTS_IN_MONGO } from "back-end/src/util/secrets";
 import { MakeModelClass } from "./BaseModel";
@@ -7,6 +8,8 @@ import { MakeModelClass } from "./BaseModel";
 const BaseClass = MakeModelClass({
   schema: segmentValidator,
   collectionName: "segments",
+  affectsDefinitionsVersion: true,
+  definitionsVersionProjectField: "projects",
   idPrefix: "seg_",
   auditLog: {
     entity: "segment",
@@ -14,8 +17,11 @@ const BaseClass = MakeModelClass({
     updateEvent: "segment.update",
     deleteEvent: "segment.delete",
   },
-  globallyUniqueIds: false,
+  globallyUniquePrimaryKeys: false,
   readonlyFields: ["datasource"],
+  defaultValues: {
+    owner: "",
+  },
 });
 
 type LegacySegmentInterface = Omit<SegmentInterface, "type"> & {
@@ -31,9 +37,10 @@ export class SegmentModel extends BaseClass {
   }
   protected canUpdate(
     existing: SegmentInterface,
-    updates: SegmentInterface,
+    _updates: UpdateProps<SegmentInterface>,
+    newDoc: SegmentInterface,
   ): boolean {
-    return this.context.permissions.canUpdateSegment(existing, updates);
+    return this.context.permissions.canUpdateSegment(existing, newDoc);
   }
   protected canDelete(doc: SegmentInterface): boolean {
     return this.context.permissions.canDeleteSegment(doc);

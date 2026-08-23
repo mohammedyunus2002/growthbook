@@ -16,11 +16,16 @@ export const HoldoutSelect = ({
   setHoldout,
   selectedHoldoutId,
   formType,
+  hideEmptyStatePromo,
 }: {
   selectedProject?: string;
   setHoldout: (holdoutId: string) => void;
   selectedHoldoutId: string | undefined;
   formType: "experiment" | "feature";
+  // When true, suppress the "Use Holdouts to ..." promo callouts that render
+  // when the org has no holdouts yet. The actual selector still renders when
+  // there are holdouts to pick from. Useful for onboarding contexts.
+  hideEmptyStatePromo?: boolean;
 }) => {
   const { getDatasourceById } = useDefinitions();
   const { hasCommercialFeature } = useUser();
@@ -36,7 +41,7 @@ export const HoldoutSelect = ({
 
       const experiment = experimentsMap.get(h.experimentId);
 
-      // If the holdout is in draft or is in the analysis period, don't show it
+      // If the holdout is in draft or is in the analysis phase, don't show it
       if (!!h.analysisStartDate || experiment?.status === "draft") {
         return false;
       }
@@ -66,20 +71,29 @@ export const HoldoutSelect = ({
     });
   }, [holdouts, experimentsMap, selectedProject, getDatasourceById]);
 
+  const requiredSelectableHoldouts = useMemo(
+    () => holdoutsWithExperiment.filter((h) => !h.skipAsDefaultHoldout),
+    [holdoutsWithExperiment],
+  );
+
+  const exemptingFromHoldout =
+    requiredSelectableHoldouts.length > 0 && selectedHoldoutId === "";
+
   useEffect(() => {
     // check to see if the holdout still exists and if not, set the holdout to the first valid holdout
     if (!holdoutsWithExperiment.some((h) => h.id === selectedHoldoutId)) {
-      setHoldout(holdoutsWithExperiment[0]?.id ?? "");
+      setHoldout(requiredSelectableHoldouts[0]?.id ?? "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holdoutsWithExperiment]);
+  }, [holdoutsWithExperiment, requiredSelectableHoldouts]);
 
   if (!hasHoldouts) {
+    if (hideEmptyStatePromo) return null;
     return (
       <PremiumCallout
         id="holdout-select-promo"
         commercialFeature="holdouts"
-        dismissable={true}
+        dismissible={true}
         mt="3"
         mb="3"
       >
@@ -94,6 +108,7 @@ export const HoldoutSelect = ({
   }
 
   if (holdoutsWithExperiment.length === 0) {
+    if (hideEmptyStatePromo || holdouts.length > 0) return null;
     return (
       <Callout
         mt="3"
@@ -115,14 +130,20 @@ export const HoldoutSelect = ({
   return (
     <>
       <SelectField
+        size="legacy"
         label="Holdout"
         labelClassName="font-weight-bold"
         value={selectedHoldoutId || ""}
         onChange={(v) => {
           setHoldout(v);
         }}
+        className={exemptingFromHoldout ? "warning" : undefined}
         helpText={
-          holdoutsWithExperiment.length === 0 ? "No holdouts" : undefined
+          exemptingFromHoldout && (
+            <HelperText status="warning" size="sm" mt="2">
+              {`Exempting this ${formType} from a holdout may impact your organization's analysis. Proceed with caution.`}
+            </HelperText>
+          )
         }
         options={[
           ...(holdoutsWithExperiment?.map((h) => {
@@ -149,7 +170,7 @@ export const HoldoutSelect = ({
                 >
                   Identifier Type: <code>{userIdType}</code>
                 </span>
-              ) : value === "" ? (
+              ) : value === "" && requiredSelectableHoldouts.length > 0 ? (
                 <span className="text-muted small float-right position-relative">
                   Override Holdout requirement{" "}
                   <PiWarningFill
@@ -162,12 +183,6 @@ export const HoldoutSelect = ({
           );
         }}
       />
-      {holdoutsWithExperiment.length > 0 && selectedHoldoutId === "" && (
-        <HelperText status="warning" size="sm" mb="3">
-          Exempting this {formType} from a holdout may impact your
-          organization&apos;s analysis. Proceed with caution.
-        </HelperText>
-      )}
     </>
   );
 };

@@ -10,6 +10,10 @@ import {
 import { PiWrench } from "react-icons/pi";
 import Collapsible from "react-collapsible";
 import { FaAngleRight } from "react-icons/fa";
+import {
+  chartTypeSupportsAnchorYAxisToZero,
+  chartTypeHasDisplaySettings,
+} from "shared/enterprise";
 import { Select, SelectItem } from "@/ui/Select";
 import {
   getXAxisConfig,
@@ -17,9 +21,24 @@ import {
   updateXAxisConfig,
   normalizeDimensionsForChartType,
 } from "@/services/dataVizConfigUtilities";
-import { AreaWithHeader } from "../SchemaBrowser/SqlExplorerModal";
+import { AreaWithHeader } from "@/components/SchemaBrowser/SqlExplorerModal";
 import DataVizFilterPanel from "./DataVizFilterPanel";
 import DataVizDimensionPanel from "./DataVizDimensionPanel";
+import DisplaySettingsPanel from "./DisplaySettingsPanel/DisplaySettingsPanel";
+import AnchorYAxisToZeroCheckbox from "./DisplaySettingsPanel/AnchorYAxisToZeroCheckbox";
+
+// Helper function to remove displaySettings from a config object
+function removeDisplaySettings<T extends Partial<DataVizConfig>>(
+  config: T,
+): Omit<T, "displaySettings"> {
+  if ("displaySettings" in config) {
+    const { displaySettings: _displaySettings, ...rest } = config as T & {
+      displaySettings?: { anchorYAxisToZero: boolean };
+    };
+    return rest as Omit<T, "displaySettings">;
+  }
+  return config as Omit<T, "displaySettings">;
+}
 
 export function inferFieldType(
   sampleRow: Record<string, unknown>,
@@ -157,17 +176,23 @@ export default function DataVizConfigPanel({
             </Flex>
             <Select
               label="Graph type"
-              size="2"
+              size="md"
               value={dataVizConfig.chartType}
               placeholder="Select graph type"
               setValue={(v) => {
                 if (v === "big-value") {
                   // If graph type is big value - set defaults
-                  onDataVizConfigChange({
+                  const configForBigValue: Partial<DataVizConfig> = {
                     ...dataVizConfig,
                     chartType: "big-value",
                     format: "shortNumber",
-                  });
+                  };
+                  // Remove displaySettings if it exists (big-value doesn't support it)
+                  onDataVizConfigChange(
+                    removeDisplaySettings(
+                      configForBigValue,
+                    ) as Partial<DataVizConfig>,
+                  );
                   return;
                 }
                 // Update chart type and normalize dimensions if needed
@@ -175,6 +200,32 @@ export default function DataVizConfigPanel({
                   ...dataVizConfig,
                   chartType: v as DataVizConfig["chartType"],
                 } as Partial<DataVizConfig>);
+                // If the chart type changes to line/scatter & we don't have displaySettings, set the default
+                if (
+                  updatedConfig.chartType &&
+                  chartTypeSupportsAnchorYAxisToZero(updatedConfig.chartType)
+                ) {
+                  if (
+                    !("displaySettings" in updatedConfig) ||
+                    !updatedConfig.displaySettings
+                  ) {
+                    onDataVizConfigChange({
+                      ...updatedConfig,
+                      displaySettings: {
+                        anchorYAxisToZero: true,
+                      },
+                    } as Partial<DataVizConfig>);
+                    return;
+                  }
+                } else {
+                  // Remove displaySettings for chart types that don't support it
+                  onDataVizConfigChange(
+                    removeDisplaySettings(
+                      updatedConfig,
+                    ) as Partial<DataVizConfig>,
+                  );
+                  return;
+                }
                 onDataVizConfigChange(updatedConfig);
               }}
             >
@@ -207,7 +258,7 @@ export default function DataVizConfigPanel({
                       ],
                     });
                   }}
-                  size="2"
+                  size="md"
                   placeholder="Select Value Column"
                 >
                   {axisKeys
@@ -220,7 +271,7 @@ export default function DataVizConfigPanel({
                 </Select>
                 <Select
                   label="Format"
-                  size="2"
+                  size="md"
                   value={dataVizConfig.format ?? "shortNumber"}
                   setValue={(v) => {
                     onDataVizConfigChange({
@@ -237,7 +288,7 @@ export default function DataVizConfigPanel({
                 </Select>
                 <Select
                   label="Aggregation"
-                  size="2"
+                  size="md"
                   value={dataVizConfig.yAxis?.[0]?.aggregation ?? "sum"}
                   setValue={(v) => {
                     onDataVizConfigChange({
@@ -279,7 +330,7 @@ export default function DataVizConfigPanel({
                       }),
                     );
                   }}
-                  size="2"
+                  size="md"
                   placeholder="Select X Axis"
                 >
                   {axisKeys.map((key) => (
@@ -305,7 +356,7 @@ export default function DataVizConfigPanel({
                             }),
                           );
                         }}
-                        size="2"
+                        size="md"
                         placeholder="Select type"
                       >
                         <SelectItem value="string">String</SelectItem>
@@ -334,7 +385,7 @@ export default function DataVizConfigPanel({
                                 }),
                               );
                             }}
-                            size="2"
+                            size="md"
                             placeholder="Select granularity"
                           >
                             <SelectItem value="none">None</SelectItem>
@@ -371,7 +422,7 @@ export default function DataVizConfigPanel({
                               }),
                             );
                           }}
-                          size="2"
+                          size="md"
                           placeholder="Select sort"
                         >
                           <SelectItem value="none">None</SelectItem>
@@ -412,7 +463,7 @@ export default function DataVizConfigPanel({
                       ],
                     });
                   }}
-                  size="2"
+                  size="md"
                   placeholder="Select Y Axis"
                 >
                   {axisKeys.map((key) => (
@@ -442,7 +493,7 @@ export default function DataVizConfigPanel({
                             ],
                           });
                         }}
-                        size="2"
+                        size="md"
                         placeholder="Select type"
                       >
                         <SelectItem value="string">String</SelectItem>
@@ -470,7 +521,7 @@ export default function DataVizConfigPanel({
                             ],
                           });
                         }}
-                        size="2"
+                        size="md"
                         placeholder="Select"
                       >
                         {dataVizConfig.yAxis?.[0].type === "number" ? (
@@ -567,7 +618,7 @@ export default function DataVizConfigPanel({
                         }),
                       );
                     }}
-                    size="2"
+                    size="md"
                     placeholder="Select columns"
                   >
                     {sortedAxisKeys.map((key) => (
@@ -593,7 +644,7 @@ export default function DataVizConfigPanel({
                               }),
                             );
                           }}
-                          size="2"
+                          size="md"
                           placeholder="Select type"
                         >
                           <SelectItem value="string">String</SelectItem>
@@ -622,7 +673,7 @@ export default function DataVizConfigPanel({
                                   }),
                                 );
                               }}
-                              size="2"
+                              size="md"
                               placeholder="Select granularity"
                             >
                               <SelectItem value="none">None</SelectItem>
@@ -659,7 +710,7 @@ export default function DataVizConfigPanel({
                                 }),
                               );
                             }}
-                            size="2"
+                            size="md"
                             placeholder="Select sort"
                           >
                             <SelectItem value="none">None</SelectItem>
@@ -754,7 +805,7 @@ export default function DataVizConfigPanel({
                       ],
                     });
                   }}
-                  size="2"
+                  size="md"
                   placeholder="Select Y Axis"
                 >
                   {axisKeys.map((key) => (
@@ -784,7 +835,7 @@ export default function DataVizConfigPanel({
                             ],
                           });
                         }}
-                        size="2"
+                        size="md"
                         placeholder="Select type"
                       >
                         <SelectItem value="string">String</SelectItem>
@@ -812,7 +863,7 @@ export default function DataVizConfigPanel({
                             ],
                           });
                         }}
-                        size="2"
+                        size="md"
                         placeholder="Select"
                       >
                         {dataVizConfig.yAxis?.[0].type === "number" ? (
@@ -848,6 +899,14 @@ export default function DataVizConfigPanel({
         onDataVizConfigChange={onDataVizConfigChange}
         rows={rows}
       />
+      {chartTypeHasDisplaySettings(dataVizConfig.chartType) && (
+        <DisplaySettingsPanel>
+          <AnchorYAxisToZeroCheckbox
+            dataVizConfig={dataVizConfig}
+            onDataVizConfigChange={onDataVizConfigChange}
+          />
+        </DisplaySettingsPanel>
+      )}
     </Flex>
   );
 }

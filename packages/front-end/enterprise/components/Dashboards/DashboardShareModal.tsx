@@ -182,7 +182,6 @@ export default function DashboardShareModal({
         showHeaderCloseButton={false}
         close={onClose}
         closeCta="Close"
-        useRadixButton={true}
         secondaryCTA={shareLinkButton}
       >
         <Flex direction="column" gap="1">
@@ -205,13 +204,14 @@ export default function DashboardShareModal({
             </Callout>
           ) : (
             <Callout status="warning" size="sm">
-              {`This report is discoverable within your organization. ${editLevel === "private" ? "Only you can edit it." : "Anybody in your organization with permissions can edit it."}`}
+              {`This dashboard is discoverable within your organization. ${editLevel === "private" ? "Only you can edit it." : "Anybody in your organization with permissions can edit it."}`}
             </Callout>
           )}
           <div className="mt-3">
             <div>
               {isGeneralDashboard && (
                 <SelectField
+                  size="legacy"
                   label="View access"
                   disabled={
                     !hasCommercialFeature("share-product-analytics-dashboards")
@@ -248,6 +248,7 @@ export default function DashboardShareModal({
             </div>
             <div>
               <SelectField
+                size="legacy"
                 label="Edit access"
                 disabled={
                   shareLevel === "private" ||

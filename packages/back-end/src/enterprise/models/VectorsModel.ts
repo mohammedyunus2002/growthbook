@@ -1,3 +1,4 @@
+import { UpdateProps } from "shared/types/base-model";
 import { MakeModelClass } from "back-end/src/models/BaseModel";
 import { vectors, Vectors } from "back-end/src/validators/vectors";
 
@@ -11,7 +12,7 @@ const BaseClass = MakeModelClass({
     updateEvent: "vector.update",
     deleteEvent: "vector.delete",
   },
-  globallyUniqueIds: true,
+  globallyUniquePrimaryKeys: true,
 });
 
 export class VectorsModel extends BaseClass {
@@ -48,24 +49,48 @@ export class VectorsModel extends BaseClass {
     return this._find({ joinId: { $in: ids }, type: "metric" });
   }
 
+  public getByLearningIds(ids: string[]) {
+    // Make sure ids is an array of strings
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) {
+      throw new Error("Invalid ids");
+    }
+    if (!ids.length) return Promise.resolve([]);
+
+    return this._find({ joinId: { $in: ids }, type: "learning" });
+  }
+
   public async addOrUpdateExperimentVector(
     experimentId: string,
-    obj: Partial<Vectors>,
+    obj: UpdateProps<Vectors>,
   ) {
     return await this.addOrUpdate(experimentId, "experiment", obj);
   }
 
   public async addOrUpdateMetricVector(
     metricId: string,
-    obj: Partial<Vectors>,
+    obj: UpdateProps<Vectors>,
   ) {
     return await this.addOrUpdate(metricId, "metric", obj);
   }
 
+  public async addOrUpdateLearningVector(
+    learningId: string,
+    obj: UpdateProps<Vectors>,
+  ) {
+    return await this.addOrUpdate(learningId, "learning", obj);
+  }
+
+  public async deleteByJoinId(joinId: string, type: Vectors["type"]) {
+    const existing = await this._findOne({ joinId, type });
+    if (existing) {
+      await this.delete(existing);
+    }
+  }
+
   public async addOrUpdate(
     joinId: string,
-    type: "experiment" | "metric",
-    obj: Partial<Vectors>,
+    type: Vectors["type"],
+    obj: UpdateProps<Vectors>,
   ) {
     if (!joinId) {
       throw new Error("JoinId is required.");

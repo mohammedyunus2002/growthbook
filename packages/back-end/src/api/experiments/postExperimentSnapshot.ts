@@ -1,22 +1,35 @@
+import isEqual from "lodash/isEqual";
 import { postExperimentSnapshotValidator } from "shared/validators";
-import { PostExperimentSnapshotResponse } from "shared/types/openapi";
-import {
-  createExperimentSnapshot,
-  SNAPSHOT_TIMEOUT,
-} from "back-end/src/controllers/experiments";
 import { getDataSourceById } from "back-end/src/models/DataSourceModel";
 import { getExperimentById } from "back-end/src/models/ExperimentModel";
+import { getLatestSuccessfulSnapshot } from "back-end/src/models/ExperimentSnapshotModel";
 import { auditDetailsCreate } from "back-end/src/services/audit";
+import {
+  createExperimentSnapshot,
+  createExperimentSnapshotFromPlan,
+  planExperimentSnapshot,
+  PlannedExperimentSnapshot,
+} from "back-end/src/services/experiments";
+import { validateSnapshotDimension } from "back-end/src/services/snapshotDimension";
+import {
+  DimensionAlreadyUpToDateError,
+  ExperimentIncrementalPipelineRequiresFullRefreshError,
+} from "back-end/src/util/errors";
 import { createApiRequestHandler } from "back-end/src/util/handler";
+import { logger } from "back-end/src/util/logger";
 
-// TODO update params (add phase, useCache)
+const REQUIRES_FULL_REFRESH_RESUBMIT_INSTRUCTIONS =
+  'Send "dimension": "" to rebuild Overall Results, wait for that snapshot to finish, then resubmit this request unchanged.';
+const DIMENSION_ALREADY_UP_TO_DATE_RESUBMIT_INSTRUCTIONS =
+  'Send "dimension": "" to update Overall Results, wait for that snapshot to finish, then resubmit this request.';
+
 export const postExperimentSnapshot = createApiRequestHandler(
   postExperimentSnapshotValidator,
-)(async (req): Promise<PostExperimentSnapshotResponse> => {
+)(async (req) => {
   const context = req.context;
   const id = req.params.id;
 
-  const { triggeredBy } = req.body;
+  const { triggeredBy, dimension, phase } = req.body ?? {};
   const experiment = await getExperimentById(context, id);
 
   if (!experiment) {
@@ -47,24 +60,122 @@ export const postExperimentSnapshot = createApiRequestHandler(
     throw new Error(`Experiment has no phases`);
   }
 
-  const createSnapshotPayload = {
-    // use last phase by default
-    phase: experiment.phases.length - 1,
-    dimension: undefined,
-    useCache: true,
-  };
+  const phaseIndex = phase ?? experiment.phases.length - 1;
+  if (!experiment.phases[phaseIndex]) {
+    throw new Error(`Phase ${phaseIndex} not found`);
+  }
 
-  // This is doing an expensive analytics SQL query, so may take a long time
-  // Set timeout to 30 minutes
-  req.setTimeout(SNAPSHOT_TIMEOUT);
+  if (dimension) {
+    await validateSnapshotDimension({
+      experiment,
+      datasource,
+      dimension,
+      organization: context.org.id,
+    });
+  }
 
-  const snapshot = await createExperimentSnapshot({
-    context,
-    experiment,
-    datasource,
-    triggeredBy,
-    ...createSnapshotPayload,
-  });
+  let useCache = true;
+  let result: Awaited<ReturnType<typeof createExperimentSnapshot>>;
+
+  if (dimension) {
+    let plan: PlannedExperimentSnapshot;
+    try {
+      plan = await planExperimentSnapshot({
+        context,
+        experiment,
+        datasource,
+        dimension,
+        phase: phaseIndex,
+        useCache: true,
+        triggeredBy,
+        throwIfRequiresFullRefresh: true,
+      });
+    } catch (error) {
+      if (
+        error instanceof ExperimentIncrementalPipelineRequiresFullRefreshError
+      ) {
+        // Rethrow with additional guidance
+        throw new ExperimentIncrementalPipelineRequiresFullRefreshError(
+          `${error.details.reason} ${REQUIRES_FULL_REFRESH_RESUBMIT_INSTRUCTIONS}`,
+        );
+      }
+
+      // Otherwise let original error propagate
+      throw error;
+    }
+
+    // Check if the dimension is already up to date, if it was generated
+    // from the latest Overall Results
+    const latestDimensionSnapshot = await getLatestSuccessfulSnapshot({
+      context,
+      experiment: experiment.id,
+      phase: phaseIndex,
+      dimension,
+    });
+
+    if (
+      latestDimensionSnapshot &&
+      plan.snapshot.sourceSnapshotId &&
+      plan.snapshot.sourceSnapshotDateCreated &&
+      plan.snapshot.sourceSnapshotId ===
+        latestDimensionSnapshot.sourceSnapshotId &&
+      plan.snapshot.analyses.every(({ settings }) =>
+        latestDimensionSnapshot.analyses?.some(
+          (analysis) =>
+            analysis.status === "success" &&
+            isEqual(analysis.settings, settings),
+        ),
+      )
+    ) {
+      const overallResultsAsOf =
+        plan.snapshot.sourceSnapshotDateCreated.toISOString();
+      throw new DimensionAlreadyUpToDateError(
+        `These results were computed from Overall Results as of ${overallResultsAsOf}. ${DIMENSION_ALREADY_UP_TO_DATE_RESUBMIT_INSTRUCTIONS}`,
+        overallResultsAsOf,
+      );
+    }
+
+    result = await createExperimentSnapshotFromPlan({
+      plan,
+      context,
+      experiment,
+    });
+  } else {
+    try {
+      result = await createExperimentSnapshot({
+        context,
+        experiment,
+        datasource,
+        triggeredBy,
+        phase: phaseIndex,
+        dimension,
+        useCache: true,
+      });
+    } catch (error) {
+      if (
+        !(
+          error instanceof ExperimentIncrementalPipelineRequiresFullRefreshError
+        )
+      ) {
+        throw error;
+      }
+      // If it requires a full refresh, let's do it automatically.
+      logger.info(
+        `Experiment ${experiment.id}: ${error.details.reason} Running a Full Refresh automatically.`,
+      );
+      useCache = false;
+      result = await createExperimentSnapshot({
+        context,
+        experiment,
+        datasource,
+        triggeredBy,
+        phase: phaseIndex,
+        dimension,
+        useCache: false,
+      });
+    }
+  }
+  const { snapshot } = result;
 
   await req.audit({
     event: "experiment.refresh",
@@ -73,15 +184,17 @@ export const postExperimentSnapshot = createApiRequestHandler(
       id: experiment.id,
     },
     details: auditDetailsCreate({
-      ...createSnapshotPayload,
+      phase: phaseIndex,
+      dimension,
+      useCache,
       manual: false,
     }),
   });
   return {
     snapshot: {
-      id: snapshot.snapshot.id,
-      experiment: snapshot.snapshot.experiment,
-      status: snapshot.snapshot.status,
+      id: snapshot.id,
+      experiment: snapshot.experiment,
+      status: snapshot.status,
     },
   };
 });

@@ -1,4 +1,7 @@
-import { DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER } from "shared/constants";
+import {
+  DEFAULT_P_VALUE_THRESHOLD,
+  DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER,
+} from "shared/constants";
 import { FaExclamationTriangle } from "react-icons/fa";
 import { PValueCorrection } from "shared/types/stats";
 import Field from "@/components/Forms/Field";
@@ -9,61 +12,39 @@ import { hasFileConfig } from "@/services/env";
 import { useUser } from "@/services/UserContext";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import { StatsEngineSettingsForm } from "./StatsEngineSettings";
+import PValueThresholdField from "./PValueThresholdField";
 
 export default function FrequentistTab({
-  pHighlightColor,
-  pWarningMsg,
   form,
 }: {
-  pHighlightColor: string;
-  pWarningMsg: string;
   form: StatsEngineSettingsForm;
 }) {
   const { hasCommercialFeature } = useUser();
+  const pValueThreshold = form.watch("pValueThreshold");
 
   return (
     <>
       <h4 className="mb-4 text-purple">Frequentist Settings</h4>
 
       <div className="form-group mb-2 mr-2 form-inline">
-        <Field
-          label="P-value threshold"
-          type="number"
-          step="0.001"
-          max="0.5"
-          min="0.001"
-          style={{
-            borderColor: pHighlightColor,
-            backgroundColor: pHighlightColor ? pHighlightColor + "15" : "",
-          }}
-          className={`ml-2`}
-          containerClassName="mb-3"
-          append=""
+        <PValueThresholdField
+          form={form}
+          name="pValueThreshold"
+          value={pValueThreshold}
+          defaultValue={DEFAULT_P_VALUE_THRESHOLD}
           disabled={hasFileConfig()}
-          helpText={
-            <>
-              <span className="ml-2">(0.05 is default)</span>
-              <div
-                className="ml-2"
-                style={{
-                  color: pHighlightColor,
-                  flexBasis: "100%",
-                }}
-              >
-                {pWarningMsg}
-              </div>
-            </>
+          helpTextAppend={
+            <span className="ml-2">
+              Default is {DEFAULT_P_VALUE_THRESHOLD}.
+            </span>
           }
-          {...form.register("pValueThreshold", {
-            valueAsNumber: true,
-            min: 0,
-            max: 1,
-          })}
+          rules={{ valueAsNumber: true }}
         />
       </div>
       <div className="mb-3  form-inline flex-column align-items-start">
         <SelectField
-          label={"Multiple comparisons correction to use: "}
+          size="legacy"
+          label={"Multiple comparisons correction to use"}
           className="ml-2"
           value={form.watch("pValueCorrection") ?? ""}
           onChange={(value) =>
@@ -112,7 +93,7 @@ export default function FrequentistTab({
                 <small className="mb-1 text-warning-orange">
                   <FaExclamationTriangle /> Your organization uses Bayesian
                   statistics by default and sequential testing is not
-                  implemented for the Bayesian engine.
+                  implemented for the Bayesian stats engine.
                 </small>
               </div>
             )}
@@ -124,6 +105,7 @@ export default function FrequentistTab({
           }}
         >
           <Field
+            size="legacy"
             label="Tuning parameter"
             type="number"
             className={`ml-2`}
@@ -135,7 +117,7 @@ export default function FrequentistTab({
             helpText={
               <>
                 <span className="ml-2">
-                  ({DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER} is default)
+                  Default is {DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER}.
                 </span>
               </>
             }

@@ -1,5 +1,29 @@
 # Changelog
 
+## **1.7.0** - Aug 7, 2026
+
+- Add Contextual Bandit support
+- Add user argument to `trackingCallback` - required for Contextual Bandits
+- All tracking and event callbacks now receive a consistent `TrackingUserContext` (`{ attributes, url }`) instead of the full internal user context
+- Fix event forwarder tracking for `GrowthBookClient`
+- Add internal subscription streams for feature usage and custom events (used by plugins)
+- Fix redirect experiment SRM issues: subdomain-stable UUID generation and unload-safe event delivery
+
+## **1.6.5** - Feb 18, 2026
+
+- Add `setFeatureUsageCallback` method
+
+## **1.6.4** - Jan 26, 2026
+
+- Add support for case-insensitive membership operators: `$ini`, `$nini`, `$alli`
+  - `$ini`: Case-insensitive version of `$in`
+  - `$nini`: Case-insensitive version of `$nin`
+  - `$alli`: Case-insensitive version of `$all`
+
+## **1.6.3** - Jan 22, 2026
+
+- Add support for case-insensitive regex targeting: `$regexi`
+
 ## **1.6.2** - Oct 30, 2025
 
 - Fix bug where `getAllResults` always returned an empty map

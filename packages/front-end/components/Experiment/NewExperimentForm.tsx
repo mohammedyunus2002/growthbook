@@ -9,6 +9,7 @@ import { useRouter } from "next/router";
 import { date, datetime, getValidDate } from "shared/dates";
 import { DataSourceInterfaceWithParams } from "shared/types/datasource";
 import { OrganizationSettings } from "shared/types/organization";
+import { getProviderFromEmbeddingModel } from "shared/ai";
 import {
   isProjectListValidForProject,
   validateAndFixCondition,
@@ -16,41 +17,44 @@ import {
 import { getScopedSettings } from "shared/settings";
 import { generateTrackingKey, getEqualWeights } from "shared/experiments";
 import { kebabCase, debounce } from "lodash";
-import { Box, Flex, Text, Heading, Separator } from "@radix-ui/themes";
+import { Box, Flex, Heading, Separator } from "@radix-ui/themes";
 import {
   FaCheckCircle,
   FaExclamationCircle,
   FaExternalLinkAlt,
 } from "react-icons/fa";
-import { useFeatureIsOn, useGrowthBook } from "@growthbook/growthbook-react";
 import { PiCaretDownFill } from "react-icons/pi";
+import Text from "@/ui/Text";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { useWatching } from "@/services/WatchProvider";
 import { useAuth } from "@/services/auth";
 import track from "@/services/track";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import { getExposureQuery } from "@/services/datasources";
-import {
-  filterCustomFieldsForSectionAndProject,
-  useCustomFields,
-} from "@/hooks/useCustomFields";
+import { useReconciledCustomFields } from "@/hooks/useReconciledCustomFields";
 import {
   generateVariationId,
   useAttributeSchema,
   useEnvironments,
+  validateUnregisteredAttributes,
 } from "@/services/features";
 import useOrgSettings, { useAISettings } from "@/hooks/useOrgSettings";
+import { hasOpenAIKey, hasMistralKey, hasGoogleAIKey } from "@/services/env";
 import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 import { useDemoDataSourceProject } from "@/hooks/useDemoDataSourceProject";
 import { useIncrementer } from "@/hooks/useIncrementer";
 import FallbackAttributeSelector from "@/components/Features/FallbackAttributeSelector";
+import {
+  AttributeOptionWithTooltip,
+  type AttributeOptionForTooltip,
+} from "@/components/Features/AttributeOptionTooltip";
 import { useUser } from "@/services/UserContext";
 import CustomFieldInput from "@/components/CustomFields/CustomFieldInput";
 import useSDKConnections from "@/hooks/useSDKConnections";
 import HashVersionSelector, {
   allConnectionsSupportBucketingV2,
 } from "@/components/Experiment/HashVersionSelector";
-import PrerequisiteTargetingField from "@/components/Features/PrerequisiteTargetingField";
+import PrerequisiteInput from "@/components/Features/PrerequisiteInput";
 import TagsInput from "@/components/Tags/TagsInput";
 import Page from "@/components/Modal/Page";
 import PagedModal from "@/components/Modal/PagedModal";
@@ -78,10 +82,18 @@ import { HoldoutSelect } from "@/components/Holdout/HoldoutSelect";
 import Link from "@/ui/Link";
 import Markdown from "@/components/Markdown/Markdown";
 import ExperimentStatusIndicator from "@/components/Experiment/TabbedPage/ExperimentStatusIndicator";
-import { AppFeatures } from "@/types/app-features";
 import { useHoldouts } from "@/hooks/useHoldouts";
-import PremiumTooltip from "../Marketing/PremiumTooltip";
+import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import ExperimentMetricsSelector from "./ExperimentMetricsSelector";
+
+export type FormVariation = {
+  id: string;
+  name: string;
+  key: string;
+  description?: string;
+  screenshots: { path: string }[];
+  weight: number;
+};
 
 const weekAgo = new Date();
 weekAgo.setDate(weekAgo.getDate() - 7);
@@ -120,12 +132,19 @@ export function getDefaultVariations(num: number) {
   return variations;
 }
 
-export function getNewExperimentDatasourceDefaults(
-  datasources: DataSourceInterfaceWithParams[],
-  settings: OrganizationSettings,
-  project?: string,
-  initialValue?: Partial<ExperimentInterfaceStringDates>,
-): Pick<ExperimentInterfaceStringDates, "datasource" | "exposureQueryId"> {
+export function getNewExperimentDatasourceDefaults({
+  datasources,
+  settings,
+  project,
+  initialValue,
+  initialHashAttribute,
+}: {
+  datasources: DataSourceInterfaceWithParams[];
+  settings: OrganizationSettings;
+  project?: string;
+  initialValue?: Partial<ExperimentInterfaceStringDates>;
+  initialHashAttribute?: string;
+}): Pick<ExperimentInterfaceStringDates, "datasource" | "exposureQueryId"> {
   const validDatasources = datasources.filter(
     (d) =>
       d.id === initialValue?.datasource ||
@@ -140,13 +159,19 @@ export function getNewExperimentDatasourceDefaults(
     (initialId && validDatasources.find((d) => d.id === initialId)) ||
     validDatasources[0];
 
+  const initialUserIdType = initialHashAttribute
+    ? (initialDatasource.settings?.userIdTypes?.find((t) =>
+        t.attributes?.includes(initialHashAttribute),
+      )?.userIdType ?? "anonymous_id")
+    : "anonymous_id";
+
   return {
     datasource: initialDatasource.id,
     exposureQueryId:
       getExposureQuery(
         initialDatasource.settings,
         initialValue?.exposureQueryId,
-        initialValue?.userIdType,
+        initialUserIdType,
       )?.id || "",
   };
 }
@@ -176,21 +201,23 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const [allowDuplicateTrackingKey, setAllowDuplicateTrackingKey] =
     useState(false);
   const [autoRefreshResults, setAutoRefreshResults] = useState(true);
+  const [useSameSeedAsOriginal, setUseSameSeedAsOriginal] = useState(false);
 
   const { datasources, getDatasourceById, refreshTags, project, projects } =
     useDefinitions();
   const { aiEnabled } = useAISettings();
-  const gb = useGrowthBook<AppFeatures>();
-  const useCheckForSimilar = gb?.isOn("similar-experiments") || true;
   const [similarExperiments, setSimilarExperiments] = useState<
     { experiment: ExperimentInterfaceStringDates; similarity: number }[]
   >([]);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [enoughWords, setEnoughWords] = useState(false);
+  const [missingEmbeddingKey, setMissingEmbeddingKey] = useState<{
+    provider: string;
+    envVar: string;
+  } | null>(null);
   const [expandSimilarResults, setExpandSimilarResults] = useState(false);
   const environments = useEnvironments();
   const { experiments } = useExperiments();
-  const holdoutsEnabled = useFeatureIsOn("holdouts_feature");
 
   const {
     templates: allTemplates,
@@ -204,6 +231,15 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
 
   const [prerequisiteTargetingSdkIssues, setPrerequisiteTargetingSdkIssues] =
     useState(false);
+  const [disableBanditConversionWindow, setDisableBanditConversionWindow] =
+    useState(() => {
+      if (initialValue?.type !== "multi-armed-bandit" || isNewExperiment)
+        return false;
+      const hasOverride =
+        initialValue?.banditConversionWindowValue != null &&
+        initialValue?.banditConversionWindowUnit != null;
+      return !hasOverride;
+    });
   const canSubmit = !prerequisiteTargetingSdkIssues;
   const minWordsForSimilarityCheck = 4;
 
@@ -218,7 +254,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const { refreshWatching } = useWatching();
 
   const { data: sdkConnectionsData } = useSDKConnections();
-  const hasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
+  const initialHasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
     sdkConnectionsData?.connections,
     project,
   );
@@ -226,6 +262,10 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const [conditionKey, forceConditionRender] = useIncrementer();
 
   const attributeSchema = useAttributeSchema(false, project);
+  // Unfiltered schema for client-side validation — lets us tell apart
+  // truly-unknown attributes from attributes that exist but are scoped to
+  // other projects, matching the back-end's project-scope-aware check.
+  const allAttributesSchema = useAttributeSchema(false);
   const hashAttributes =
     attributeSchema?.filter((a) => a.hashAttribute)?.map((a) => a.property) ||
     [];
@@ -236,24 +276,35 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
 
   const orgStickyBucketing = !!settings.useStickyBucketing;
   const lastPhase = (initialValue?.phases?.length ?? 1) - 1;
+  const initialHashAttribute = initialValue?.hashAttribute || hashAttribute;
+
+  const initialExpVariations =
+    initialValue?.variations ?? getDefaultVariations(initialNumVariations);
+  const toPhaseVariations = (vars: Variation[]) =>
+    vars.map((v) => ({
+      id: v.id,
+      status: "active" as const,
+    }));
+  const toEqualWeights = (vars: Variation[]) => getEqualWeights(vars.length);
 
   const form = useForm<Partial<ExperimentInterfaceStringDates>>({
     defaultValues: {
       project: initialValue?.project || project || "",
       trackingKey: initialValue?.trackingKey || "",
-      ...getNewExperimentDatasourceDefaults(
+      ...getNewExperimentDatasourceDefaults({
         datasources,
         settings,
-        initialValue?.project || project || "",
+        project: initialValue?.project || project || "",
         initialValue,
-      ),
+        initialHashAttribute,
+      }),
       name: initialValue?.name || "",
       type: initialValue?.type ?? "standard",
       hypothesis: initialValue?.hypothesis || "",
       activationMetric: initialValue?.activationMetric || "",
-      hashAttribute: initialValue?.hashAttribute || hashAttribute,
+      hashAttribute: initialHashAttribute,
       hashVersion:
-        initialValue?.hashVersion || (hasSDKWithNoBucketingV2 ? 1 : 2),
+        initialValue?.hashVersion || (initialHasSDKWithNoBucketingV2 ? 1 : 2),
       disableStickyBucketing: initialValue?.disableStickyBucketing ?? false,
       attributionModel:
         initialValue?.attributionModel ??
@@ -265,49 +316,44 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       targetURLRegex: initialValue?.targetURLRegex || "",
       description: initialValue?.description || "",
       guardrailMetrics: initialValue?.guardrailMetrics || [],
-      variations: initialValue?.variations
-        ? initialValue.variations
-        : getDefaultVariations(initialNumVariations),
+      variations: initialExpVariations,
       phases: [
         ...(initialValue?.phases?.[lastPhase]
           ? [
               {
                 ...initialValue.phases[lastPhase],
-                coverage: initialValue.phases?.[lastPhase]?.coverage || 1,
+                coverage: initialValue.phases?.[lastPhase]?.coverage ?? 1,
                 dateStarted: getValidDate(
                   initialValue.phases?.[lastPhase]?.dateStarted ?? "",
                 )
                   .toISOString()
-                  .substr(0, 16),
+                  .substring(0, 16),
                 dateEnded: getValidDate(
                   initialValue.phases?.[lastPhase]?.dateEnded ?? "",
                 )
                   .toISOString()
-                  .substr(0, 16),
+                  .substring(0, 16),
                 name: initialValue.phases?.[lastPhase]?.name || "Main",
                 reason: "",
                 variationWeights:
-                  initialValue.phases?.[lastPhase]?.variationWeights ||
-                  getEqualWeights(
-                    initialValue.variations
-                      ? initialValue.variations.length
-                      : 2,
-                  ),
+                  initialValue.phases[lastPhase].variationWeights ??
+                  toEqualWeights(initialExpVariations),
+                variations:
+                  initialValue.phases[lastPhase].variations ??
+                  toPhaseVariations(initialExpVariations),
+                // Clear seed when duplicating to generate a fresh one on the backend
+                ...(duplicate ? { seed: undefined } : {}),
               },
             ]
           : [
               {
                 coverage: 1,
-                dateStarted: new Date().toISOString().substr(0, 16),
-                dateEnded: new Date().toISOString().substr(0, 16),
+                dateStarted: new Date().toISOString().substring(0, 16),
+                dateEnded: new Date().toISOString().substring(0, 16),
                 name: "Main",
                 reason: "",
-                variationWeights: getEqualWeights(
-                  (initialValue?.variations
-                    ? initialValue.variations
-                    : getDefaultVariations(initialNumVariations)
-                  )?.length || 2,
-                ),
+                variationWeights: toEqualWeights(initialExpVariations),
+                variations: toPhaseVariations(initialExpVariations),
               },
             ]),
       ],
@@ -320,19 +366,28 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       banditScheduleUnit: scopedSettings.banditScheduleUnit.value,
       banditBurnInValue: scopedSettings.banditBurnInValue.value,
       banditBurnInUnit: scopedSettings.banditScheduleUnit.value,
+      banditConversionWindowValue: initialValue?.banditConversionWindowValue,
+      banditConversionWindowUnit:
+        initialValue?.banditConversionWindowUnit ?? "hours",
       templateId: initialValue?.templateId || "",
       holdoutId: initialValue?.holdoutId || undefined,
       customMetricSlices: initialValue?.customMetricSlices || [],
-      pinnedMetricSlices: initialValue?.pinnedMetricSlices || [],
     },
   });
 
   const selectedProject = form.watch("project");
-  const customFields = filterCustomFieldsForSectionAndProject(
-    useCustomFields(),
-    "experiment",
+  const hasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
+    sdkConnectionsData?.connections,
     selectedProject,
   );
+
+  const { availableFields: customFields, value: customFieldValues } =
+    useReconciledCustomFields({
+      section: "experiment",
+      project: selectedProject,
+      value: form.watch("customFields"),
+      setValue: (value) => form.setValue("customFields", value),
+    });
 
   const datasource = form.watch("datasource")
     ? getDatasourceById(form.watch("datasource") ?? "")
@@ -343,6 +398,80 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const willExperimentBeIncludedInIncrementalRefresh =
     isPipelineIncrementalEnabledForDatasource &&
     datasource?.settings.pipelineSettings?.includedExperimentIds === undefined;
+
+  // Combined variations: merges experiment-level Variation metadata
+  // (name, key, screenshots) with phase-level variationWeights.
+  const watchedExpVariations = form.watch("variations") ?? [];
+  const watchedWeights = form.watch("phases.0.variationWeights") ?? [];
+  const combinedVariations: FormVariation[] = watchedExpVariations.map(
+    (v, i) => ({
+      id: v.id || "",
+      name: v.name,
+      key: v.key || `${i}`,
+      description: v.description,
+      screenshots: v.screenshots,
+      weight: watchedWeights[i] ?? 1 / (watchedExpVariations.length || 2),
+    }),
+  );
+
+  const setCombinedVariations = useCallback(
+    (
+      v: {
+        value?: string;
+        id?: string;
+        name?: string;
+        weight: number;
+        description?: string;
+        screenshots?: { path: string }[];
+      }[],
+    ) => {
+      const normalizedVariations = v.map((data, i) => ({
+        ...data,
+        key: data.value ?? `${i}`,
+        id: data.id || generateVariationId(),
+      }));
+
+      form.setValue(
+        "variations",
+        normalizedVariations.map((data) => ({
+          name: data.name ?? "",
+          description: data.description ?? "",
+          screenshots: data.screenshots ?? [],
+          key: data.key,
+          id: data.id,
+        })),
+      );
+      form.setValue(
+        "phases.0.variationWeights",
+        normalizedVariations.map((data) => data.weight),
+      );
+      form.setValue(
+        "phases.0.variations",
+        normalizedVariations.map((data) => ({
+          id: data.id,
+          status: "active" as const,
+        })),
+      );
+    },
+    [form],
+  );
+
+  const setVariationWeight = useCallback(
+    (i: number, weight: number) => {
+      form.setValue(`phases.0.variationWeights.${i}`, weight);
+    },
+    [form],
+  );
+
+  // Props for FeatureVariationsInput derived from the combined variations
+  const variationsForInput = combinedVariations.map((v) => ({
+    value: v.key || "",
+    name: v.name,
+    weight: v.weight,
+    id: v.id,
+    description: v.description,
+    screenshots: v.screenshots,
+  }));
 
   const { apiCall } = useAuth();
 
@@ -390,6 +519,23 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
         throw new Error("Prerequisite targeting issues must be resolved");
       }
 
+      // Opt-in client-side pre-flight — catches typo'd experiment attributes
+      // before the network round-trip, same wording as the back-end error.
+      validateUnregisteredAttributes(
+        {
+          hashAttribute: (data as { hashAttribute?: string }).hashAttribute,
+          fallbackAttribute: (data as { fallbackAttribute?: string })
+            .fallbackAttribute,
+          condition: data.phases[0].condition,
+        },
+        "experiment",
+        {
+          attributeSchema: allAttributesSchema,
+          requireRegisteredAttributes: settings.requireRegisteredAttributes,
+          project: data.project || project || undefined,
+        },
+      );
+
       // bandits
       if (
         data.type === "multi-armed-bandit" &&
@@ -405,7 +551,28 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
         if ((data.goalMetrics?.length ?? 0) !== 1) {
           throw new Error("You must select 1 decision metric");
         }
+        const shouldIncludeConversionWindow =
+          !disableBanditConversionWindow &&
+          (!settings.useStickyBucketing || data.disableStickyBucketing);
+
+        if (!shouldIncludeConversionWindow) {
+          delete data.banditConversionWindowValue;
+          delete data.banditConversionWindowUnit;
+        } else if (
+          !data.banditConversionWindowValue ||
+          !data.banditConversionWindowUnit
+        ) {
+          throw new Error(
+            "Enter a conversion window override or disable the conversion window override",
+          );
+        }
       }
+    }
+
+    if (duplicate && data.phases?.[0]) {
+      data.phases[0].seed = useSameSeedAsOriginal
+        ? initialValue?.phases?.[lastPhase]?.seed
+        : undefined;
     }
 
     const body = JSON.stringify(data);
@@ -417,6 +584,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
     }
     if (duplicate && initialValue?.id) {
       params.originalId = initialValue.id;
+      if (useSameSeedAsOriginal) {
+        params.allowSameSeedAsOriginal = true;
+      }
     }
 
     if (autoRefreshResults && isImport) {
@@ -475,6 +645,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
     .map((t) => ({ value: t.id, label: t.templateMetadata.name }));
 
   const allowAllProjects = permissionsUtils.canViewExperimentModal();
+  const hasProjectPermission = selectedProject
+    ? permissionsUtils.canViewExperimentModal(selectedProject)
+    : allowAllProjects;
 
   const exposureQueries = datasource?.settings?.queries?.exposure || [];
   const exposureQueryId = form.getValues("exposureQueryId");
@@ -501,7 +674,6 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
         keepDefaultValues: true,
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // If a holdout is set for a new experiment, use the hash attribute of the holdout experiment
@@ -536,8 +708,8 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const [linkNameWithTrackingKey, setLinkNameWithTrackingKey] = useState(true);
 
   let header = isNewExperiment
-    ? `Add new ${isBandit ? "Bandit" : "Experiment"}`
-    : "Add new Experiment Analysis";
+    ? `Add New ${isBandit ? "Bandit" : "Experiment"}`
+    : "Add New Experiment Analysis";
   if (duplicate) {
     header = `Duplicate ${isBandit ? "Bandit" : "Experiment"}`;
   }
@@ -549,7 +721,41 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const trackingKeyFieldHandlers = form.register("trackingKey");
 
   const checkForSimilar = useCallback(async () => {
-    if (!aiEnabled || !useCheckForSimilar) return;
+    if (!aiEnabled) return;
+
+    // Check if we have the API key for the embedding model provider
+    const embeddingModel = settings.embeddingModel || "text-embedding-ada-002";
+    let hasEmbeddingKey = false;
+    let embeddingProvider = "openai";
+    const providerEnvVars: Record<string, string> = {
+      openai: "OPENAI_API_KEY",
+      mistral: "MISTRAL_API_KEY",
+      google: "GOOGLE_AI_API_KEY",
+    };
+    try {
+      embeddingProvider = getProviderFromEmbeddingModel(embeddingModel);
+      if (embeddingProvider === "openai") {
+        hasEmbeddingKey = hasOpenAIKey();
+      } else if (embeddingProvider === "mistral") {
+        hasEmbeddingKey = hasMistralKey();
+      } else if (embeddingProvider === "google") {
+        hasEmbeddingKey = hasGoogleAIKey();
+      }
+    } catch {
+      //  Ignore if we can't determine the provider
+    }
+
+    if (!hasEmbeddingKey) {
+      setMissingEmbeddingKey({
+        provider:
+          embeddingProvider.charAt(0).toUpperCase() +
+          embeddingProvider.slice(1),
+        envVar: providerEnvVars[embeddingProvider] || "API_KEY",
+      });
+      return;
+    }
+
+    setMissingEmbeddingKey(null);
 
     // check how many words we're sending in the hypothesis, name, and description:
     const wordCount =
@@ -622,6 +828,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   return (
     <FormProvider {...form}>
       <PagedModal
+        useRadixButton={false}
         trackingEventModalType={trackingEventModalType}
         trackingEventModalSource={source}
         header={header}
@@ -629,7 +836,14 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
         docSection="experimentConfiguration"
         submit={onSubmit}
         cta={"Save"}
-        ctaEnabled={canSubmit}
+        ctaEnabled={canSubmit && hasProjectPermission}
+        disabledMessage={
+          !hasProjectPermission
+            ? !selectedProject && availableProjects.length > 0
+              ? "Select a project to continue."
+              : "You don't have permission to create experiments."
+            : undefined
+        }
         closeCta="Cancel"
         size="lg"
         step={step}
@@ -639,16 +853,15 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       >
         <Page display="Overview">
           <div className="px-2">
-            {msg && <div className="alert alert-info">{msg}</div>}
+            {msg && <Callout status="info">{msg}</Callout>}
 
             {currentProjectIsDemo && (
-              <div className="alert alert-warning">
-                You are creating an experiment under the demo datasource
-                project. This experiment will be deleted when the demo
-                datasource project is deleted.
-              </div>
+              <Callout status="warning">
+                You are creating an experiment in the Sample Data Project.
+              </Callout>
             )}
-            {availableTemplates.length >= 1 &&
+            {hasCommercialFeature("templates") &&
+              availableTemplates.length >= 1 &&
               !isBandit &&
               !isImport &&
               !duplicate && (
@@ -657,6 +870,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <label>Select Template</label>
                   </PremiumTooltip>
                   <SelectField
+                    size="legacy"
                     value={form.watch("templateId") ?? ""}
                     onChange={(t) => {
                       if (t === "") {
@@ -684,7 +898,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       return (
                         <Flex as="div" align="baseline">
                           <Text>{value.label}</Text>
-                          <Text size="1" className="text-muted" ml="auto">
+                          <Text size="sm" color="text-mid" ml="auto">
                             Created {date(t.dateCreated)}
                           </Text>
                         </Flex>
@@ -705,6 +919,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               <div className="form-group">
                 <label>Project</label>
                 <SelectField
+                  size="legacy"
                   value={form.watch("project") ?? ""}
                   onChange={(p) => {
                     form.setValue("project", p);
@@ -716,21 +931,20 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               </div>
             )}
 
-            {holdoutsEnabled && (
-              <>
-                <HoldoutSelect
-                  selectedProject={selectedProject}
-                  selectedHoldoutId={form.watch("holdoutId")}
-                  setHoldout={(holdoutId) => {
-                    form.setValue("holdoutId", holdoutId);
-                  }}
-                  formType="experiment"
-                />
-                <Separator size="4" mt="5" mb="5" />
-              </>
-            )}
+            <>
+              <HoldoutSelect
+                selectedProject={selectedProject}
+                selectedHoldoutId={form.watch("holdoutId")}
+                setHoldout={(holdoutId) => {
+                  form.setValue("holdoutId", holdoutId);
+                }}
+                formType="experiment"
+              />
+              <Separator size="4" mt="5" mb="5" />
+            </>
 
             <Field
+              size="legacy"
               label={isBandit ? "Bandit Name" : "Experiment Name"}
               required
               minLength={2}
@@ -758,19 +972,42 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               }}
             />
 
-            <Field
-              label="Tracking Key"
-              helpText={`Unique identifier for this ${
-                isBandit ? "Bandit" : "Experiment"
-              }, used to track impressions and analyze results`}
-              {...trackingKeyFieldHandlers}
-              onChange={(e) => {
-                trackingKeyFieldHandlers.onChange(e);
-                setLinkNameWithTrackingKey(false);
-              }}
-            />
+            <div className="form-group">
+              <Text as="label" weight="semibold" mb="1">
+                Tracking Key
+              </Text>
+              <Text as="div" color="text-mid" mb="2">
+                {`Unique identifier for this ${
+                  isBandit ? "Bandit" : "Experiment"
+                }, used to track impressions and analyze results`}
+              </Text>
+              <Field
+                size="legacy"
+                {...trackingKeyFieldHandlers}
+                onChange={(e) => {
+                  trackingKeyFieldHandlers.onChange(e);
+                  setLinkNameWithTrackingKey(false);
+                }}
+              />
+            </div>
+            {duplicate && (
+              <Box mb="4">
+                <Checkbox
+                  label="Use same randomization seed as original experiment"
+                  value={useSameSeedAsOriginal}
+                  setValue={(v) => setUseSameSeedAsOriginal(v)}
+                  error={
+                    useSameSeedAsOriginal
+                      ? "Can introduce bias if the original experiment influenced user behavior."
+                      : undefined
+                  }
+                  errorLevel="warning"
+                />
+              </Box>
+            )}
             {!isBandit && (
               <Field
+                size="legacy"
                 label="Hypothesis"
                 textarea
                 minRows={2}
@@ -789,6 +1026,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
             )}
             {includeDescription && (
               <Field
+                size="legacy"
                 label="Description"
                 textarea
                 minRows={2}
@@ -807,32 +1045,39 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                 }`}
               />
             )}
-            {useCheckForSimilar && (
-              <>
-                {!enoughWords ? (
-                  <Box my="4">
-                    <Flex gap="2" className="text-muted" align="center">
-                      <FaExclamationCircle />
-                      <Text size="2" weight="light">
-                        Enter more details to check for similar experiments
-                      </Text>
-                    </Flex>
-                  </Box>
-                ) : (
-                  <>
-                    {aiLoading ? (
+            <>
+              {missingEmbeddingKey ? (
+                <Box my="4">
+                  <Callout status="warning">
+                    {missingEmbeddingKey.provider} API key is required for
+                    checking similar experiments. Please set{" "}
+                    <code>{missingEmbeddingKey.envVar}</code> in your
+                    environment variables.
+                  </Callout>
+                </Box>
+              ) : !enoughWords ? (
+                <Box my="4">
+                  <Flex gap="2" className="text-muted" align="center">
+                    <FaExclamationCircle />
+                    <Text weight="regular">
+                      Enter more details to check for similar experiments
+                    </Text>
+                  </Flex>
+                </Box>
+              ) : (
+                <>
+                  {aiLoading ? (
+                    <Box my="4">
+                      <Flex gap="2" className="text-muted">
+                        <LoadingSpinner />
+                        <Text>Checking for similar experiments...</Text>
+                      </Flex>
+                    </Box>
+                  ) : (
+                    <>
                       <Box my="4">
-                        <Flex gap="2" className="text-muted">
-                          <LoadingSpinner />
-                          <Text size="2">
-                            Checking for similar experiments...
-                          </Text>
-                        </Flex>
-                      </Box>
-                    ) : (
-                      <>
-                        <Box my="4">
-                          <Text size="2" color="violet">
+                        <span style={{ color: "var(--violet-11)" }}>
+                          <Text>
                             {similarExperiments.length > 0 ? (
                               <Flex
                                 onClick={(e) => {
@@ -852,13 +1097,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                                       : "rotate(-90deg)",
                                   }}
                                 />
-                                <Text
-                                  weight="medium"
-                                  style={{
-                                    cursor: "pointer",
-                                    color: "violet-11",
-                                  }}
-                                >
+                                <Text weight="medium" as="span">
                                   Similar experiment
                                   {similarExperiments.length === 1 ? "" : "s"} (
                                   {similarExperiments.length})
@@ -871,85 +1110,85 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                               </Flex>
                             )}
                           </Text>
-                          {expandSimilarResults && (
-                            <Flex
-                              gap="3"
-                              direction="column"
-                              my="3"
-                              p="4"
-                              style={{
-                                backgroundColor: "var(--accent-a3)",
-                                borderRadius: "4px",
-                              }}
-                            >
-                              {similarExperiments.map((s, i) => (
-                                <Box
-                                  key={`similar-${i}`}
-                                  className="appbox"
-                                  p="3"
-                                  width="100%"
-                                  style={{
-                                    marginBottom: 0,
-                                    maxHeight: "430px",
-                                    overflowY: "auto",
-                                    color: "var(--text-color-main)",
-                                  }}
+                        </span>
+                        {expandSimilarResults && (
+                          <Flex
+                            gap="3"
+                            direction="column"
+                            my="3"
+                            p="4"
+                            style={{
+                              backgroundColor: "var(--accent-a3)",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            {similarExperiments.map((s, i) => (
+                              <Box
+                                key={`similar-${i}`}
+                                className="appbox"
+                                p="3"
+                                width="100%"
+                                style={{
+                                  marginBottom: 0,
+                                  maxHeight: "430px",
+                                  overflowY: "auto",
+                                  color: "var(--text-color-main)",
+                                }}
+                              >
+                                <Flex
+                                  direction="column"
+                                  gap="3"
+                                  justify="start"
                                 >
-                                  <Flex
-                                    direction="column"
-                                    gap="3"
-                                    justify="start"
-                                  >
-                                    <Flex gap="3" justify="between">
-                                      <Flex gap="3" align="start">
-                                        <Link
-                                          href="/experiment/[id]"
-                                          as={`/experiment/${s.experiment.id}`}
-                                          target="_blank"
-                                        >
-                                          <Heading size="2">
-                                            {s.experiment.name}
-                                          </Heading>
-                                        </Link>
-                                        <span style={{ fontSize: "0.8rem" }}>
-                                          <FaExternalLinkAlt />
-                                        </span>
-                                      </Flex>
-                                      <Flex gap="3" align="center">
-                                        <Text size="1" className="text-muted">
-                                          {date(s.experiment.dateCreated)}
-                                        </Text>
-                                        <ExperimentStatusIndicator
-                                          experimentData={s.experiment}
-                                        />
-                                      </Flex>
+                                  <Flex gap="3" justify="between">
+                                    <Flex gap="3" align="start">
+                                      <Link
+                                        href="/experiment/[id]"
+                                        as={`/experiment/${s.experiment.id}`}
+                                        target="_blank"
+                                      >
+                                        <Heading size="2">
+                                          {s.experiment.name}
+                                        </Heading>
+                                      </Link>
+                                      <span style={{ fontSize: "0.8rem" }}>
+                                        <FaExternalLinkAlt />
+                                      </span>
                                     </Flex>
-                                    {s.experiment.description && (
-                                      <Box style={{ fontSize: "0.9em" }}>
-                                        <strong>Description:</strong>{" "}
-                                        <Markdown>
-                                          {s.experiment.description}
-                                        </Markdown>
-                                      </Box>
-                                    )}
+                                    <Flex gap="3" align="center">
+                                      <Text size="sm" color="text-mid">
+                                        {date(s.experiment.dateCreated)}
+                                      </Text>
+                                      <ExperimentStatusIndicator
+                                        experimentData={s.experiment}
+                                      />
+                                    </Flex>
+                                  </Flex>
+                                  {s.experiment.description && (
                                     <Box style={{ fontSize: "0.9em" }}>
-                                      <strong>Hypothesis:</strong>{" "}
+                                      <strong>Description:</strong>{" "}
                                       <Markdown>
-                                        {s.experiment.hypothesis}
+                                        {s.experiment.description}
                                       </Markdown>
                                     </Box>
-                                  </Flex>
-                                </Box>
-                              ))}
-                            </Flex>
-                          )}
-                        </Box>
-                      </>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+                                  )}
+                                  <Box style={{ fontSize: "0.9em" }}>
+                                    <strong>Hypothesis:</strong>{" "}
+                                    <Markdown>
+                                      {s.experiment.hypothesis}
+                                    </Markdown>
+                                  </Box>
+                                </Flex>
+                              </Box>
+                            ))}
+                          </Flex>
+                        )}
+                      </Box>
+                    </>
+                  )}
+                </>
+              )}
+            </>
             <div className="form-group">
               <label>Tags</label>
               <TagsInput
@@ -960,6 +1199,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
             {!isNewExperiment && (
               <>
                 <SelectField
+                  size="legacy"
                   label="Status"
                   options={[
                     { label: "draft", value: "draft" },
@@ -1002,21 +1242,17 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                 )}
               </>
             )}
-            {hasCommercialFeature("custom-metadata") &&
-              !!customFields?.length && (
-                <CustomFieldInput
-                  customFields={customFields}
-                  currentCustomFields={form.watch("customFields") || {}}
-                  setCustomFields={(value) => {
-                    form.setValue("customFields", value);
-                  }}
-                  section={"experiment"}
-                  project={selectedProject}
-                />
-              )}
+            {customFields.length > 0 && (
+              <CustomFieldInput
+                fields={customFields}
+                value={customFieldValues}
+                onChange={(value) => form.setValue("customFields", value)}
+              />
+            )}
           </div>
         </Page>
 
+        {/* Standard Experiments */}
         {!isBandit && (isNewExperiment || duplicate)
           ? ["Overview", "Traffic", "Targeting", "Metrics"].map((p, i) => {
               // skip, custom overview page above
@@ -1027,7 +1263,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <ExperimentRefNewFields
                       step={i}
                       source="experiment"
-                      project={project}
+                      project={selectedProject}
                       environments={envs}
                       noSchedule={true}
                       prerequisiteValue={
@@ -1055,39 +1291,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       setCoverage={(coverage) =>
                         form.setValue("phases.0.coverage", coverage)
                       }
-                      setWeight={(i, weight) =>
-                        form.setValue(`phases.0.variationWeights.${i}`, weight)
-                      }
-                      variations={
-                        form.watch("variations")?.map((v, i) => {
-                          return {
-                            value: v.key || "",
-                            name: v.name,
-                            weight: form.watch(
-                              `phases.0.variationWeights.${i}`,
-                            ),
-                            id: v.id,
-                          };
-                        }) ?? []
-                      }
-                      setVariations={(v) => {
-                        form.setValue(
-                          "variations",
-                          v.map((data, i) => {
-                            return {
-                              // default values
-                              name: "",
-                              screenshots: [],
-                              ...data,
-                              key: data.value || `${i}` || "",
-                            };
-                          }),
-                        );
-                        form.setValue(
-                          "phases.0.variationWeights",
-                          v.map((v) => v.weight),
-                        );
-                      }}
+                      setWeight={setVariationWeight}
+                      variations={variationsForInput}
+                      setVariations={setCombinedVariations}
                       variationValuesAsIds={true}
                       hideVariationIds={!isImport}
                       orgStickyBucketing={orgStickyBucketing}
@@ -1099,6 +1305,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
             })
           : null}
 
+        {/* Bandit Experiments */}
         {isBandit && (isNewExperiment || duplicate)
           ? ["Overview", "Traffic", "Targeting", "Metrics"].map((p, i) => {
               // skip, custom overview page above
@@ -1109,7 +1316,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <BanditRefNewFields
                       step={i}
                       source="experiment"
-                      project={project}
+                      project={selectedProject}
                       environments={envs}
                       prerequisiteValue={
                         form.watch("phases.0.prerequisites") || []
@@ -1136,39 +1343,15 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       setCoverage={(coverage) =>
                         form.setValue("phases.0.coverage", coverage)
                       }
-                      setWeight={(i, weight) =>
-                        form.setValue(`phases.0.variationWeights.${i}`, weight)
+                      setWeight={setVariationWeight}
+                      variations={variationsForInput}
+                      setVariations={setCombinedVariations}
+                      disableBanditConversionWindow={
+                        disableBanditConversionWindow
                       }
-                      variations={
-                        form.watch("variations")?.map((v, i) => {
-                          return {
-                            value: v.key || "",
-                            name: v.name,
-                            weight: form.watch(
-                              `phases.0.variationWeights.${i}`,
-                            ),
-                            id: v.id,
-                          };
-                        }) ?? []
+                      setDisableBanditConversionWindow={
+                        setDisableBanditConversionWindow
                       }
-                      setVariations={(v) => {
-                        form.setValue(
-                          "variations",
-                          v.map((data, i) => {
-                            return {
-                              // default values
-                              name: "",
-                              screenshots: [],
-                              ...data,
-                              key: data.value || `${i}` || "",
-                            };
-                          }),
-                        );
-                        form.setValue(
-                          "phases.0.variationWeights",
-                          v.map((v) => v.weight),
-                        );
-                      }}
                     />
                   </div>
                 </Page>
@@ -1176,31 +1359,51 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
             })
           : null}
 
+        {/* Imported Experiments */}
         {!(isNewExperiment || duplicate) ? (
           <Page display="Targeting">
-            <div className="px-2">
+            <div>
               {isNewExperiment && (
                 <>
                   <div className="d-flex" style={{ gap: "2rem" }}>
-                    <SelectField
-                      containerClassName="flex-1"
-                      label="Assign variation based on attribute"
-                      labelClassName="font-weight-bold"
-                      options={attributeSchema
-                        .filter((s) => !hasHashAttributes || s.hashAttribute)
-                        .map((s) => ({
-                          label: s.property,
-                          value: s.property,
-                        }))}
-                      sort={false}
-                      value={form.watch("hashAttribute") || ""}
-                      onChange={(v) => {
-                        form.setValue("hashAttribute", v);
-                      }}
-                      helpText={
-                        "Will be hashed together with the seed (UUID) to determine which variation to assign"
-                      }
-                    />
+                    <div className="flex-1">
+                      <Text as="label" weight="semibold" mb="1">
+                        Assign variation based on attribute
+                      </Text>
+                      <Text as="div" color="text-mid" mb="2">
+                        Will be hashed together with the seed (UUID) to
+                        determine which variation to assign
+                      </Text>
+                      <SelectField
+                        size="legacy"
+                        withRadixThemedPortal
+                        options={attributeSchema
+                          .filter((s) => !hasHashAttributes || s.hashAttribute)
+                          .map((s) => ({
+                            label: s.property,
+                            value: s.property,
+                            description: s.description,
+                            tags: s.tags,
+                            datatype: s.datatype,
+                            hashAttribute: s.hashAttribute,
+                          }))}
+                        sort={false}
+                        value={form.watch("hashAttribute") || ""}
+                        onChange={(v) => {
+                          form.setValue("hashAttribute", v);
+                        }}
+                        formatOptionLabel={(o, meta) => {
+                          return (
+                            <AttributeOptionWithTooltip
+                              option={o as AttributeOptionForTooltip}
+                              context={meta.context}
+                            >
+                              {o.label}
+                            </AttributeOptionWithTooltip>
+                          );
+                        }}
+                      />
+                    </div>
                     <FallbackAttributeSelector
                       form={form}
                       attributeSchema={attributeSchema}
@@ -1211,11 +1414,11 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <HashVersionSelector
                       value={(form.watch("hashVersion") || 1) as 1 | 2}
                       onChange={(v) => form.setValue("hashVersion", v)}
-                      project={project}
+                      project={selectedProject}
                     />
                   )}
 
-                  <hr />
+                  <Separator size="4" my="5" />
                   <SavedGroupTargetingField
                     value={form.watch("phases.0.savedGroups") || []}
                     setValue={(savedGroups) =>
@@ -1223,7 +1426,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     }
                     project={project}
                   />
-                  <hr />
+                  <Separator size="4" my="5" />
                   <ConditionInput
                     defaultValue={form.watch("phases.0.condition") || ""}
                     onChange={(value) =>
@@ -1232,8 +1435,8 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     key={conditionKey}
                     project={project}
                   />
-                  <hr />
-                  <PrerequisiteTargetingField
+                  <Separator size="4" my="5" />
+                  <PrerequisiteInput
                     value={form.watch("phases.0.prerequisites") || []}
                     setValue={(prerequisites) =>
                       form.setValue("phases.0.prerequisites", prerequisites)
@@ -1250,6 +1453,8 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     form={form}
                     featureId={""}
                     trackingKey={""}
+                    experimentHashAttribute={form.watch("hashAttribute")}
+                    fallbackAttribute={form.watch("fallbackAttribute")}
                   />
                 </>
               )}
@@ -1272,39 +1477,11 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     ? "This can be changed later"
                     : "This is just for documentation purposes and has no effect on the analysis."
                 }
-                setWeight={(i, weight) =>
-                  form.setValue(`phases.0.variationWeights.${i}`, weight)
-                }
+                setWeight={setVariationWeight}
                 valueAsId={false}
                 startEditingIndexes={true}
-                variations={
-                  form.watch("variations")?.map((v, i) => {
-                    return {
-                      value: v.key || "",
-                      name: v.name,
-                      weight: form.watch(`phases.0.variationWeights.${i}`),
-                      id: v.id,
-                    };
-                  }) ?? []
-                }
-                setVariations={(v) => {
-                  form.setValue(
-                    "variations",
-                    v.map((data, i) => {
-                      return {
-                        name: "",
-                        screenshots: [],
-                        ...data,
-                        // use value as key if provided to maintain backwards compatibility
-                        key: data.value || `${i}` || "",
-                      };
-                    }),
-                  );
-                  form.setValue(
-                    "phases.0.variationWeights",
-                    v.map((v) => v.weight),
-                  );
-                }}
+                variations={variationsForInput}
+                setVariations={setCombinedVariations}
                 hideVariationIds={false}
                 showPreview={!!isNewExperiment}
                 disableCustomSplit={type === "multi-armed-bandit"}
@@ -1315,9 +1492,10 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
 
         {!(isNewExperiment || duplicate) ? (
           <Page display="Metrics">
-            <div className="px-2" style={{ minHeight: 350 }}>
+            <div style={{ minHeight: 350 }}>
               {(!isImport || fromFeature) && (
                 <SelectField
+                  size="legacy"
                   label="Data Source"
                   labelClassName="font-weight-bold"
                   value={form.watch("datasource") ?? ""}
@@ -1338,6 +1516,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               )}
               {datasource?.properties?.exposureQueries && (
                 <SelectField
+                  size="legacy"
                   label={
                     <>
                       Experiment Assignment Table{" "}
@@ -1379,7 +1558,6 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               <ExperimentMetricsSelector
                 datasource={datasource?.id}
                 noLegacyMetrics={willExperimentBeIncludedInIncrementalRefresh}
-                excludeQuantiles={willExperimentBeIncludedInIncrementalRefresh}
                 exposureQueryId={exposureQueryId}
                 project={project}
                 goalMetrics={form.watch("goalMetrics") ?? []}
@@ -1395,6 +1573,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                   form.setValue("guardrailMetrics", guardrailMetrics)
                 }
                 experimentId={initialValue?.id}
+                experimentType={type}
               />
             </div>
 

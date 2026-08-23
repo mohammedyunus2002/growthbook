@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { SSO_CONFIG } from "shared/enterprise";
+import { ExpressCookieStickyBucketService } from "@growthbook/growthbook";
 import { userHasPermission } from "shared/permissions";
 import { AuditInterface } from "shared/types/audit";
 import { Permission } from "shared/types/organization";
@@ -9,7 +10,7 @@ import {
   EventUserLoggedIn,
 } from "shared/types/events/event-types";
 import { logger } from "back-end/src/util/logger";
-import { IS_CLOUD } from "back-end/src/util/secrets";
+import { IS_CLOUD, IS_LOCALHOST } from "back-end/src/util/secrets";
 import { AuthRequest } from "back-end/src/types/AuthRequest";
 import {
   hasUser,
@@ -30,14 +31,22 @@ import {
   RefreshTokenCookie,
   SSOConnectionIdCookie,
 } from "back-end/src/util/cookie";
+import { getBuild } from "back-end/src/util/build";
+import { usingFileConfig } from "back-end/src/init/config";
 import { getUserPermissions } from "back-end/src/util/organization.util";
 import { insertAudit } from "back-end/src/models/AuditModel";
-import { getTeamsForOrganization } from "back-end/src/models/TeamModel";
 import {
   getLicenseMetaData,
   getUserCodesForOrg,
 } from "back-end/src/services/licenseData";
-import { licenseInit } from "back-end/src/enterprise";
+import { licenseInit, getEffectiveAccountPlan } from "back-end/src/enterprise";
+import {
+  getGrowthBookClient,
+  getGrowthBookRequestUrl,
+  getGrowthBookTrackingAttributes,
+  hashOrganizationId,
+} from "back-end/src/services/growthbook";
+import { TeamModel } from "back-end/src/models/TeamModel";
 import { AuthConnection } from "./AuthConnection";
 import { OpenIdAuthConnection } from "./OpenIdAuthConnection";
 import { LocalAuthConnection } from "./LocalAuthConnection";
@@ -84,7 +93,7 @@ async function getUserFromJWT(info: JWTInfo): Promise<null | UserInterface> {
 
   return user;
 }
-function getInitialDataFromJWT(user: IdToken): JWTInfo {
+export function getInitialDataFromJWT(user: IdToken): JWTInfo {
   // Vercel has special property names
   if ("iss" in user && user.iss === "https://marketplace.vercel.com") {
     return {
@@ -99,14 +108,13 @@ function getInitialDataFromJWT(user: IdToken): JWTInfo {
   return {
     verified: user.email_verified || false,
     email: user.email || "",
-    name: user.given_name || user.name || "",
+    name: user.name || user.given_name || "",
     issuedAt: user.iat,
     sub: user.sub,
   };
 }
 
 export async function processJWT(
-  // eslint-disable-next-line
   req: AuthRequest & { user: IdToken },
   res: Response<unknown, EventUserForResponseLocals>,
   next: NextFunction,
@@ -166,7 +174,13 @@ export async function processJWT(
     // require all future logins to be verified too.
     // This stops someone from creating an unverified email/password account and gaining access to
     // an account using "Login with Google"
-    if (IS_CLOUD && !req.loginMethod?.id && user.verified && !req.verified) {
+    if (
+      IS_CLOUD &&
+      !IS_LOCALHOST &&
+      !req.loginMethod?.id &&
+      user.verified &&
+      !req.verified
+    ) {
       res.status(406).json({
         status: 406,
         message: "You must log in via SSO to use GrowthBook",
@@ -184,6 +198,19 @@ export async function processJWT(
         undefined;
 
       if (req.organization) {
+        if (req.organization.suspended && !req.superAdmin) {
+          const allowedPaths = new Set(["GET /organization", "GET /user"]);
+          const currentPath = `${req.method} ${req.path}`;
+          if (!allowedPaths.has(currentPath)) {
+            res.status(403).json({
+              status: 403,
+              message:
+                "Account Suspended. Please contact support@growthbook.io for assistance.",
+            });
+            return;
+          }
+        }
+
         if (
           !req.superAdmin &&
           !req.organization.members.filter((m) => m.id === req.userId).length
@@ -223,7 +250,9 @@ export async function processJWT(
           }
         }
 
-        req.teams = await getTeamsForOrganization(req.organization.id);
+        req.teams = await TeamModel.dangerousGetTeamsForOrganization(
+          req.organization.id,
+        );
 
         // Make sure this is a valid login method for the organization
         try {
@@ -276,6 +305,73 @@ export async function processJWT(
         dateCreated: new Date(),
       });
     };
+
+    const gbClient = getGrowthBookClient();
+
+    if (gbClient) {
+      const build = getBuild();
+      const org = req.organization;
+      const orgId = org?.id || "";
+      const hashedOrganizationId = hashOrganizationId(orgId);
+
+      // Create sticky bucket service for Express
+      const stickyBucketService = new ExpressCookieStickyBucketService({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        req: req as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        res: res as any,
+      });
+
+      const trackingAttributes = getGrowthBookTrackingAttributes(req);
+
+      // Define user attributes
+      // Note: cloud and multiOrg are set as globalAttributes in growthbook.ts
+      const attributes = {
+        id: user.id,
+        user_id: user.id,
+        request_path: req.path,
+        freeSeats: org?.freeSeats,
+        discountCode: org?.discountCode,
+        organizationId: hashedOrganizationId,
+        cloudOrgId: IS_CLOUD ? orgId : "",
+        accountPlan: org ? getEffectiveAccountPlan(org) : "loading",
+        superAdmin: user.superAdmin,
+        orgDateCreated: org?.dateCreated
+          ? new Date(org.dateCreated).toISOString()
+          : "",
+        ...trackingAttributes,
+        role: org?.members.find((m) => m.id === user.id)?.role,
+        hasLicenseKey: org?.licenseKey ? true : false,
+        configFile: usingFileConfig(),
+        usingSSO: usingOpenId(),
+        buildSHA: build.sha,
+        buildDate: build.date,
+        buildVersion: build.lastVersion,
+        orgOwnerJobTitle: org?.demographicData?.ownerJobTitle,
+        orgOwnerUsageIntents: org?.demographicData?.ownerUsageIntents,
+      };
+
+      try {
+        // Apply sticky bucketing and get user context
+        const userContext = await gbClient.applyStickyBuckets(
+          {
+            attributes,
+            url: getGrowthBookRequestUrl(req),
+            enableDevMode: true,
+          },
+          stickyBucketService,
+        );
+
+        // Create scoped instance for this request (reuses singleton)
+        req.gb = gbClient.createScopedInstance(userContext);
+      } catch (error) {
+        logger.error("Failed to create GrowthBook scoped instance", {
+          error,
+          userId: user.id,
+        });
+        // Continue without feature flags rather than failing request
+      }
+    }
   } else {
     req.audit = async () => {
       throw new Error("No user in request");
@@ -318,7 +414,7 @@ export async function isNewInstallation() {
 }
 
 export function usingOpenId() {
-  if (IS_CLOUD) return true;
+  if (IS_CLOUD && !IS_LOCALHOST) return true;
   if (SSO_CONFIG) return true;
   return false;
 }

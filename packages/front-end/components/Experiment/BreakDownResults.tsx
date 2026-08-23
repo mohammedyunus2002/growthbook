@@ -1,4 +1,6 @@
-import { FC, useState } from "react";
+import { FC, Fragment, useState } from "react";
+import { IconButton } from "@radix-ui/themes";
+import { PiCaretCircleRight, PiCaretCircleDown } from "react-icons/pi";
 import {
   ExperimentReportResultDimension,
   ExperimentReportVariation,
@@ -10,25 +12,40 @@ import {
   MetricOverride,
 } from "shared/types/experiment";
 import {
+  ExperimentSnapshotAnalysis,
+  ExperimentSnapshotAnalysisSettings,
+  ExperimentSnapshotInterface,
+} from "shared/types/experiment-snapshot";
+import {
   DifferenceType,
   PValueCorrection,
+  SignificanceThresholds,
   StatsEngine,
 } from "shared/types/stats";
-import { ExperimentMetricInterface } from "shared/experiments";
+import {
+  ExperimentMetricDefinition,
+  ExperimentSortBy,
+  SetExperimentSortBy,
+  formatDimensionValueForDisplay,
+} from "shared/experiments";
+import { NULL_DIMENSION_VALUE } from "shared/constants";
 import { FaCaretRight } from "react-icons/fa";
 import Collapsible from "react-collapsible";
 import { useDefinitions } from "@/services/DefinitionsContext";
+import { ExperimentTableRow } from "@/services/experiments";
 import ResultsTable, {
   RESULTS_TABLE_COLUMNS,
 } from "@/components/Experiment/ResultsTable";
 import { QueryStatusData } from "@/components/Queries/RunQueriesButton";
 import { getRenderLabelColumn } from "@/components/Experiment/CompactResults";
-import { ResultsMetricFilters } from "@/components/Experiment/Results";
-import ResultsMetricFilter from "@/components/Experiment/ResultsMetricFilter";
+import FunnelStepLabel from "@/components/Experiment/FunnelStepLabel";
+import RadixTooltip from "@/ui/Tooltip";
 import { SSRPolyfills } from "@/hooks/useSSRPolyfills";
 import { useExperimentDimensionRows } from "@/hooks/useExperimentDimensionRows";
 import useOrgSettings from "@/hooks/useOrgSettings";
+import { useMetricDrilldownContext } from "@/components/MetricDrilldown/useMetricDrilldownContext";
 import Link from "@/ui/Link";
+import Callout from "@/ui/Callout";
 import UsersTable from "./UsersTable";
 
 export const includeVariation = (
@@ -44,10 +61,12 @@ export const includeVariation = (
 
 const BreakDownResults: FC<{
   experimentId: string;
+  significanceThresholds: SignificanceThresholds;
   results: ExperimentReportResultDimension[];
   queryStatusData?: QueryStatusData;
   variations: ExperimentReportVariation[];
   variationFilter?: number[];
+  setVariationFilter?: (variationFilter: number[]) => void;
   baselineRow?: number;
   columnsFilter?: Array<(typeof RESULTS_TABLE_COLUMNS)[number]>;
   goalMetrics: string[];
@@ -70,33 +89,40 @@ const BreakDownResults: FC<{
   sequentialTestingEnabled?: boolean;
   showErrorsOnQuantileMetrics?: boolean;
   differenceType: DifferenceType;
-  metricFilter?: ResultsMetricFilters;
-  setMetricFilter?: (filter: ResultsMetricFilters) => void;
+  metricTagFilter?: string[];
+  metricsFilter?: string[];
   experimentType?: ExperimentType;
   ssrPolyfills?: SSRPolyfills;
-  hideDetails?: boolean;
   renderMetricName?: (
-    metric: ExperimentMetricInterface,
+    metric: ExperimentMetricDefinition,
   ) => React.ReactElement | string;
   noStickyHeader?: boolean;
-  sortBy?: "metric-tags" | "significance" | "change" | "custom" | null;
-  setSortBy?: (
-    s: "metric-tags" | "significance" | "change" | "custom" | null,
-  ) => void;
+  sortBy?: ExperimentSortBy;
+  setSortBy?: SetExperimentSortBy;
   sortDirection?: "asc" | "desc" | null;
   setSortDirection?: (d: "asc" | "desc" | null) => void;
   customMetricOrder?: string[];
   analysisBarSettings?: {
     variationFilter: number[];
   };
+  setBaselineRow?: (baselineRow: number) => void;
+  snapshot?: ExperimentSnapshotInterface;
+  analysis?: ExperimentSnapshotAnalysis;
+  setAnalysisSettings?: (
+    settings: ExperimentSnapshotAnalysisSettings | null,
+  ) => void;
+  mutate?: () => Promise<unknown>;
+  setDifferenceType?: (differenceType: DifferenceType) => void;
 }> = ({
   experimentId,
+  significanceThresholds,
   dimensionId,
   dimensionValuesFilter,
   results,
   queryStatusData,
   variations,
   variationFilter,
+  setVariationFilter,
   baselineRow,
   columnsFilter,
   goalMetrics,
@@ -117,11 +143,10 @@ const BreakDownResults: FC<{
   sequentialTestingEnabled,
   showErrorsOnQuantileMetrics,
   differenceType,
-  metricFilter,
-  setMetricFilter,
+  metricTagFilter,
+  metricsFilter,
   experimentType,
   ssrPolyfills,
-  hideDetails,
   renderMetricName,
   noStickyHeader,
   sortBy,
@@ -130,13 +155,28 @@ const BreakDownResults: FC<{
   setSortDirection,
   customMetricOrder,
   analysisBarSettings,
+  setBaselineRow,
+  snapshot,
+  analysis,
+  setAnalysisSettings,
+  mutate,
+  setDifferenceType,
 }) => {
-  const [showMetricFilter, setShowMetricFilter] = useState<boolean>(false);
-
   const { getDimensionById, getExperimentMetricById } = useDefinitions();
 
   const _settings = useOrgSettings();
   const settings = ssrPolyfills?.useOrgSettings?.() || _settings;
+
+  // Detect drilldown context for automatic row click handling
+  const drilldownContext = useMetricDrilldownContext();
+
+  // Funnel step child rows nest under their dimension-value parent and stay
+  // collapsed until the parent's chevron is toggled. The key matches the
+  // `parentRowId` (`metricId:dimensionValue`) each child row carries.
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const toggleExpandedRow = (parentRowId: string) => {
+    setExpandedRows((prev) => ({ ...prev, [parentRowId]: !prev[parentRowId] }));
+  };
 
   const dimension =
     ssrPolyfills?.getDimensionById?.(dimensionId)?.name ||
@@ -144,14 +184,15 @@ const BreakDownResults: FC<{
     dimensionId?.split(":")?.[1] ||
     "Dimension";
 
-  const { tables, allMetricTags } = useExperimentDimensionRows({
+  const { tables } = useExperimentDimensionRows({
     results,
     goalMetrics,
     secondaryMetrics,
     guardrailMetrics,
     metricOverrides,
     ssrPolyfills,
-    metricFilter,
+    metricTagFilter,
+    metricsFilter,
     sortBy,
     sortDirection,
     customMetricOrder,
@@ -161,6 +202,7 @@ const BreakDownResults: FC<{
     settingsForSnapshotMetrics,
     dimensionValuesFilter,
     showErrorsOnQuantileMetrics,
+    pValueThreshold: significanceThresholds.pValueThreshold,
   });
 
   const activationMetricObj = activationMetric
@@ -171,16 +213,29 @@ const BreakDownResults: FC<{
   const isBandit = experimentType === "multi-armed-bandit";
   const isHoldout = experimentType === "holdout";
 
+  // Wrap drilldown to include dimension info
+  const handleRowClick = drilldownContext
+    ? (row: ExperimentTableRow) => {
+        const rawValue =
+          row.dimensionValue ??
+          (typeof row.label === "string" ? row.label : "");
+        const value = formatDimensionValueForDisplay(rawValue);
+        drilldownContext.openDrilldown(row, {
+          dimensionInfo: { id: dimensionId, name: dimension, value, rawValue },
+        });
+      }
+    : undefined;
+
   return (
     <div className="mb-3">
       <div className="mb-4">
         {dimensionId === "pre:activation" && activationMetricObj && (
-          <div className="alert alert-info mt-1 mx-3">
+          <Callout status="info" mt="1" mx="3">
             Your experiment has an Activation Metric (
             <strong>{activationMetricObj?.name}</strong>
             ). This report lets you compare activated users with those who
             entered into the experiment, but were not activated.
-          </div>
+          </Callout>
         )}
         {!isBandit && (
           <div className="users">
@@ -205,21 +260,20 @@ const BreakDownResults: FC<{
         )}
       </div>
 
-      <div className="d-flex mx-2">
-        {setMetricFilter ? (
-          <ResultsMetricFilter
-            metricTags={allMetricTags}
-            metricFilter={metricFilter}
-            setMetricFilter={setMetricFilter}
-            showMetricFilter={showMetricFilter}
-            setShowMetricFilter={setShowMetricFilter}
-          />
-        ) : null}
-      </div>
       {tables.map((table, i) => {
+        // Hide funnel step child rows whose dimension-value parent is collapsed.
+        const visibleRows = table.rows.filter(
+          (row) =>
+            !row.isChildRow ||
+            !row.parentRowId ||
+            !!expandedRows[row.parentRowId],
+        );
         return (
-          <>
-            <h5 className="ml-2 mt-2 position-relative">
+          <Fragment key={table.metric.id + "_" + i}>
+            <h4
+              className="mt-2 mb-1 d-flex position-relative ml-2"
+              style={{ gap: 4 }}
+            >
               {table.rows[0]?.resultGroup === "goal"
                 ? "Goal Metric"
                 : table.rows[0]?.resultGroup === "secondary"
@@ -227,10 +281,11 @@ const BreakDownResults: FC<{
                   : table.rows[0]?.resultGroup === "guardrail"
                     ? "Guardrail Metric"
                     : null}
-            </h5>
+            </h4>
             <ResultsTable
               key={i}
               experimentId={experimentId}
+              significanceThresholds={significanceThresholds}
               dateCreated={reportDate}
               isLatestPhase={isLatestPhase}
               phase={phase}
@@ -240,9 +295,11 @@ const BreakDownResults: FC<{
               queryStatusData={queryStatusData}
               variations={variations}
               variationFilter={variationFilter}
+              setVariationFilter={setVariationFilter}
               baselineRow={baselineRow}
               columnsFilter={columnsFilter}
-              rows={table.rows}
+              rows={visibleRows}
+              onRowClick={handleRowClick}
               dimension={dimension}
               id={(idPrefix ? `${idPrefix}_` : "") + table.metric.id}
               tableRowAxis="dimension" // todo: dynamic grouping?
@@ -251,12 +308,7 @@ const BreakDownResults: FC<{
                   renderMetricName(table.metric)
                 ) : (
                   <div style={{ marginBottom: 2 }}>
-                    {getRenderLabelColumn({
-                      statsEngine,
-                      hideDetails,
-                      experimentType,
-                      className: "",
-                    })({
+                    {getRenderLabelColumn({})({
                       label: table.metric.name,
                       metric: table.metric,
                       row: table.rows[0],
@@ -269,29 +321,79 @@ const BreakDownResults: FC<{
               sequentialTestingEnabled={sequentialTestingEnabled}
               pValueCorrection={pValueCorrection}
               differenceType={differenceType}
-              renderLabelColumn={({ label }) => (
-                <div
-                  className="pl-3 font-weight-bold"
-                  style={{
-                    display: "-webkit-box",
-                    WebkitLineClamp: 1,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                    color: "var(--color-text-mid)",
-                  }}
-                >
-                  {label ? (
-                    label === "__NULL_DIMENSION" ? (
-                      <em>NULL (unset)</em>
-                    ) : (
-                      label
-                    )
-                  ) : (
-                    <em>unknown</em>
-                  )}
-                </div>
-              )}
-              metricFilter={metricFilter}
+              setDifferenceType={setDifferenceType}
+              renderLabelColumn={({ label, row }) => {
+                if (row?.childRowType === "funnelStep") {
+                  return <FunnelStepLabel label={label} row={row} />;
+                }
+
+                const hasSteps = !!row?.numChildren;
+                const parentRowId = `${row?.metric?.id}:${row?.label ?? ""}`;
+                const isExpanded = !!expandedRows[parentRowId];
+                return (
+                  <div
+                    className="pl-3 font-weight-bold"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 1,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                      color: "var(--color-text-mid)",
+                    }}
+                  >
+                    {hasSteps ? (
+                      <span
+                        style={{
+                          position: "absolute",
+                          left: 7,
+                          top: 0,
+                          bottom: 0,
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                      >
+                        <RadixTooltip
+                          content={
+                            isExpanded
+                              ? "Collapse funnel steps"
+                              : "Expand funnel steps"
+                          }
+                          side="top"
+                        >
+                          <IconButton
+                            size="1"
+                            variant="ghost"
+                            radius="full"
+                            aria-label={
+                              isExpanded
+                                ? "Collapse funnel steps"
+                                : "Expand funnel steps"
+                            }
+                            onClick={() => toggleExpandedRow(parentRowId)}
+                          >
+                            {isExpanded ? (
+                              <PiCaretCircleDown size={16} />
+                            ) : (
+                              <PiCaretCircleRight size={16} />
+                            )}
+                          </IconButton>
+                        </RadixTooltip>
+                      </span>
+                    ) : null}
+                    <span className={hasSteps ? "ml-2" : undefined}>
+                      {label ? (
+                        label === NULL_DIMENSION_VALUE ? (
+                          <em>{formatDimensionValueForDisplay(label)}</em>
+                        ) : (
+                          label
+                        )
+                      ) : (
+                        <em>unknown</em>
+                      )}
+                    </span>
+                  </div>
+                );
+              }}
               isTabActive={true}
               isBandit={isBandit}
               ssrPolyfills={ssrPolyfills}
@@ -301,9 +403,14 @@ const BreakDownResults: FC<{
               setSortBy={setSortBy}
               sortDirection={sortDirection}
               setSortDirection={setSortDirection}
+              setBaselineRow={setBaselineRow}
+              snapshot={snapshot}
+              analysis={analysis}
+              setAnalysisSettings={setAnalysisSettings}
+              mutate={mutate}
             />
             <div className="mb-5" />
-          </>
+          </Fragment>
         );
       })}
     </div>

@@ -1,10 +1,10 @@
 import mongoose, { FilterQuery, QueryOptions } from "mongoose";
-import uniqid from "uniqid";
 import { AuditInterface, EntityType } from "shared/types/audit";
 import {
   removeMongooseFields,
   ToInterface,
 } from "back-end/src/util/mongo.util";
+import { generateId } from "back-end/src/util/uuid";
 
 const auditSchema = new mongoose.Schema({
   id: {
@@ -43,8 +43,13 @@ type AuditDocument = mongoose.Document & AuditInterface;
 
 const AuditModel = mongoose.model<AuditInterface>("Audit", auditSchema);
 
-const toInterface: ToInterface<AuditInterface> = (doc: AuditDocument) => {
-  return removeMongooseFields(doc);
+const toInterface: ToInterface<AuditInterface> = (doc) => {
+  const audit = removeMongooseFields(doc);
+  // Legacy audit docs may be missing the user field entirely
+  if (!audit.user) {
+    audit.user = { id: "", email: "", name: "Unknown" };
+  }
+  return audit;
 };
 
 export async function insertAudit(
@@ -52,7 +57,7 @@ export async function insertAudit(
 ): Promise<AuditInterface> {
   const auditDoc = await AuditModel.create({
     ...data,
-    id: uniqid("aud_"),
+    id: generateId("aud_"),
   });
   return toInterface(auditDoc);
 }
@@ -61,19 +66,17 @@ export async function insertAudit(
  * find all audits by user id and organization
  * @param userId
  * @param organization
- * @param options
  */
-export async function findAuditByUserIdAndOrganization(
+export async function findRecentAuditByUserIdAndOrganization(
   userId: string,
   organization: string,
-  options?: QueryOptions,
-): Promise<AuditInterface[]> {
+): Promise<Omit<AuditInterface, "details">[]> {
   const userAudits = await AuditModel.find({
     "user.id": userId,
     organization,
-    ...options,
   })
-    .limit(100)
+    .select("-details")
+    .limit(10)
     .sort({ dateCreated: -1 });
   const transformed = userAudits.map((doc) => toInterface(doc));
   return transformed;

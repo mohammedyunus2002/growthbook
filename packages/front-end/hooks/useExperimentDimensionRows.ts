@@ -7,10 +7,14 @@ import { MetricOverride } from "shared/types/experiment";
 import { PValueCorrection, StatsEngine } from "shared/types/stats";
 import {
   expandMetricGroups,
-  ExperimentMetricInterface,
+  ExperimentMetricDefinition,
+  ExperimentSortBy,
   quantileMetricType,
   setAdjustedCIs,
   setAdjustedPValuesOnResults,
+  isMetricGroupId,
+  isFactFunnelMetric,
+  funnelStepMetricId,
 } from "shared/experiments";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import {
@@ -18,15 +22,14 @@ import {
   ExperimentTableRow,
   compareRows,
 } from "@/services/experiments";
-import {
-  ResultsMetricFilters,
-  sortAndFilterMetricsByTags,
-} from "@/components/Experiment/Results";
 import { RowError } from "@/components/Experiment/ResultsTable";
-import usePValueThreshold from "@/hooks/usePValueThreshold";
 import { SSRPolyfills } from "@/hooks/useSSRPolyfills";
 import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
-import { getAllMetricTags } from "./useExperimentTableRows";
+import {
+  filterMetricsByTags,
+  sortMetricsByCustomOrder,
+  sortMetricsByTags,
+} from "./useExperimentTableRows";
 
 export interface UseExperimentDimensionRowsParams {
   results: ExperimentReportResultDimension[];
@@ -35,8 +38,9 @@ export interface UseExperimentDimensionRowsParams {
   guardrailMetrics: string[];
   metricOverrides: MetricOverride[];
   ssrPolyfills?: SSRPolyfills;
-  metricFilter?: ResultsMetricFilters;
-  sortBy?: "metric-tags" | "significance" | "change" | "custom" | null;
+  metricTagFilter?: string[];
+  metricsFilter?: string[];
+  sortBy?: ExperimentSortBy;
   sortDirection?: "asc" | "desc" | null;
   customMetricOrder?: string[];
   analysisBarSettings?: {
@@ -47,15 +51,15 @@ export interface UseExperimentDimensionRowsParams {
   settingsForSnapshotMetrics?: MetricSnapshotSettings[];
   dimensionValuesFilter?: string[];
   showErrorsOnQuantileMetrics?: boolean;
+  pValueThreshold: number;
 }
 
 export interface UseExperimentDimensionRowsReturn {
   tables: Array<{
-    metric: ExperimentMetricInterface;
+    metric: ExperimentMetricDefinition;
     isGuardrail: boolean;
     rows: ExperimentTableRow[];
   }>;
-  allMetricTags: string[];
 }
 
 export function useExperimentDimensionRows({
@@ -65,7 +69,8 @@ export function useExperimentDimensionRows({
   guardrailMetrics,
   metricOverrides,
   ssrPolyfills,
-  metricFilter,
+  metricTagFilter,
+  metricsFilter,
   sortBy,
   sortDirection,
   customMetricOrder,
@@ -75,53 +80,187 @@ export function useExperimentDimensionRows({
   settingsForSnapshotMetrics,
   dimensionValuesFilter,
   showErrorsOnQuantileMetrics = false,
+  pValueThreshold,
 }: UseExperimentDimensionRowsParams): UseExperimentDimensionRowsReturn {
   const { getExperimentMetricById, metricGroups, ready } = useDefinitions();
   const { metricDefaults } = useOrganizationMetricDefaults();
 
-  const _pValueThreshold = usePValueThreshold();
-  const pValueThreshold =
-    ssrPolyfills?.usePValueThreshold() || _pValueThreshold;
-
   const { expandedGoals, expandedSecondaries, expandedGuardrails } =
     useMemo(() => {
+      const allMetricGroups = ssrPolyfills?.metricGroups || metricGroups;
+
+      // Check for selector IDs in metricsFilter (they constrain which categories to show)
+      const hasGoalSelector =
+        metricsFilter?.includes("experiment-goal") ?? false;
+      const hasSecondarySelector =
+        metricsFilter?.includes("experiment-secondary") ?? false;
+      const hasGuardrailSelector =
+        metricsFilter?.includes("experiment-guardrail") ?? false;
+
+      // Filter out selector IDs from the actual metric filter
+      const actualMetricFilter =
+        metricsFilter?.filter(
+          (id) =>
+            ![
+              "experiment-goal",
+              "experiment-secondary",
+              "experiment-guardrail",
+            ].includes(id),
+        ) ?? [];
+
+      // Determine which categories to include based on selector IDs
+      // If no selectors are present, include all categories (equivalent to "all")
+      const includeGoals =
+        hasGoalSelector ||
+        (!hasGoalSelector && !hasSecondarySelector && !hasGuardrailSelector);
+      const includeSecondaries =
+        hasSecondarySelector ||
+        (!hasGoalSelector && !hasSecondarySelector && !hasGuardrailSelector);
+      const includeGuardrails =
+        hasGuardrailSelector ||
+        (!hasGoalSelector && !hasSecondarySelector && !hasGuardrailSelector);
+
+      // Filter by metric groups if filter is active
+      let filteredGoalMetrics: string[] = [];
+      let filteredSecondaryMetrics: string[] = [];
+      let filteredGuardrailMetrics: string[] = [];
+
+      if (
+        actualMetricFilter.length > 0 ||
+        hasGoalSelector ||
+        hasSecondarySelector ||
+        hasGuardrailSelector
+      ) {
+        // Create a set of allowed metric IDs from expanded groups and individual metrics
+        const allowedMetricIds = new Set<string>();
+        actualMetricFilter.forEach((id) => {
+          if (isMetricGroupId(id)) {
+            const group = allMetricGroups.find((g) => g.id === id);
+            if (group) {
+              group.metrics.forEach((metricId) =>
+                allowedMetricIds.add(metricId),
+              );
+            }
+          } else {
+            allowedMetricIds.add(id);
+          }
+        });
+
+        // Filter metrics by group or allowed metric IDs
+        // Only include categories that are selected via selector IDs
+        // For groups, expand them first and check if any expanded metric matches
+        if (includeGoals) {
+          filteredGoalMetrics = goalMetrics.filter((id) => {
+            // If no actual metric filter, include all goal metrics (selector-only case)
+            if (actualMetricFilter.length === 0) return true;
+            // Otherwise, filter by actual metric filter (within goal category)
+            if (actualMetricFilter.includes(id)) return true;
+            if (allowedMetricIds.has(id)) return true;
+            // If it's a group, expand it and check if any metric matches
+            if (isMetricGroupId(id)) {
+              const group = allMetricGroups.find((g) => g.id === id);
+              if (group) {
+                return group.metrics.some((metricId) =>
+                  allowedMetricIds.has(metricId),
+                );
+              }
+            }
+            return false;
+          });
+        }
+
+        if (includeSecondaries) {
+          filteredSecondaryMetrics = secondaryMetrics.filter((id) => {
+            // If no actual metric filter, include all secondary metrics (selector-only case)
+            if (actualMetricFilter.length === 0) return true;
+            // Otherwise, filter by actual metric filter (within secondary category)
+            if (actualMetricFilter.includes(id)) return true;
+            if (allowedMetricIds.has(id)) return true;
+            // If it's a group, expand it and check if any metric matches
+            if (isMetricGroupId(id)) {
+              const group = allMetricGroups.find((g) => g.id === id);
+              if (group) {
+                return group.metrics.some((metricId) =>
+                  allowedMetricIds.has(metricId),
+                );
+              }
+            }
+            return false;
+          });
+        }
+
+        if (includeGuardrails) {
+          filteredGuardrailMetrics = guardrailMetrics.filter((id) => {
+            // If no actual metric filter, include all guardrail metrics (selector-only case)
+            if (actualMetricFilter.length === 0) return true;
+            // Otherwise, filter by actual metric filter (within guardrail category)
+            if (actualMetricFilter.includes(id)) return true;
+            if (allowedMetricIds.has(id)) return true;
+            // If it's a group, expand it and check if any metric matches
+            if (isMetricGroupId(id)) {
+              const group = allMetricGroups.find((g) => g.id === id);
+              if (group) {
+                return group.metrics.some((metricId) =>
+                  allowedMetricIds.has(metricId),
+                );
+              }
+            }
+            return false;
+          });
+        }
+      } else {
+        // No filter at all - include all metrics
+        filteredGoalMetrics = goalMetrics;
+        filteredSecondaryMetrics = secondaryMetrics;
+        filteredGuardrailMetrics = guardrailMetrics;
+      }
+
       const expandedGoals = expandMetricGroups(
-        goalMetrics,
-        ssrPolyfills?.metricGroups || metricGroups,
+        filteredGoalMetrics,
+        allMetricGroups,
       );
       const expandedSecondaries = expandMetricGroups(
-        secondaryMetrics,
-        ssrPolyfills?.metricGroups || metricGroups,
+        filteredSecondaryMetrics,
+        allMetricGroups,
       );
       const expandedGuardrails = expandMetricGroups(
-        guardrailMetrics,
-        ssrPolyfills?.metricGroups || metricGroups,
+        filteredGuardrailMetrics,
+        allMetricGroups,
       );
 
-      return { expandedGoals, expandedSecondaries, expandedGuardrails };
+      // Dedupe metric rows to prevent rendering the same metric multiple times
+      const dedupedGoals: string[] = [];
+      expandedGoals.forEach((metricId) => {
+        if (!dedupedGoals.includes(metricId)) {
+          dedupedGoals.push(metricId);
+        }
+      });
+      const dedupedSecondaries: string[] = [];
+      expandedSecondaries.forEach((metricId) => {
+        if (!dedupedSecondaries.includes(metricId)) {
+          dedupedSecondaries.push(metricId);
+        }
+      });
+      const dedupedGuardrails: string[] = [];
+      expandedGuardrails.forEach((metricId) => {
+        if (!dedupedGuardrails.includes(metricId)) {
+          dedupedGuardrails.push(metricId);
+        }
+      });
+
+      return {
+        expandedGoals: dedupedGoals,
+        expandedSecondaries: dedupedSecondaries,
+        expandedGuardrails: dedupedGuardrails,
+      };
     }, [
       goalMetrics,
       metricGroups,
       ssrPolyfills?.metricGroups,
       secondaryMetrics,
       guardrailMetrics,
+      metricsFilter,
     ]);
-
-  const allMetricTags = useMemo(() => {
-    return getAllMetricTags(
-      expandedGoals,
-      expandedSecondaries,
-      expandedGuardrails,
-      ssrPolyfills,
-      getExperimentMetricById,
-    );
-  }, [
-    expandedGoals,
-    expandedSecondaries,
-    expandedGuardrails,
-    ssrPolyfills,
-    getExperimentMetricById,
-  ]);
 
   const tables = useMemo(() => {
     if (!results.length || (!ready && !ssrPolyfills)) {
@@ -138,20 +277,52 @@ export function useExperimentDimensionRows({
       metricIds: string[],
       resultGroup: "goal" | "secondary" | "guardrail",
     ) {
-      return metricIds
+      // Get metric definitions
+      const metricDefs = metricIds
+        .map(
+          (metricId) =>
+            ssrPolyfills?.getExperimentMetricById?.(metricId) ||
+            getExperimentMetricById(metricId),
+        )
+        .filter((m): m is ExperimentMetricDefinition => !!m);
+
+      // Apply tag filtering first (independent of sorting)
+      const filteredMetricIds = filterMetricsByTags(
+        metricDefs,
+        metricTagFilter,
+      );
+
+      // Apply custom ordering if sortBy is "metrics" or "metricTags"
+      const sortedMetricIds =
+        sortBy === "metrics" && customMetricOrder
+          ? sortMetricsByCustomOrder(
+              metricDefs.filter((m) => filteredMetricIds.includes(m.id)),
+              customMetricOrder,
+              ssrPolyfills?.metricGroups || metricGroups,
+            )
+          : sortBy === "metricTags" &&
+              metricTagFilter &&
+              metricTagFilter.length > 0
+            ? sortMetricsByTags(
+                metricDefs.filter((m) => filteredMetricIds.includes(m.id)),
+                metricTagFilter,
+                ssrPolyfills?.metricGroups || metricGroups,
+              )
+            : filteredMetricIds;
+
+      return sortedMetricIds
         .map((metricId) => {
           const metric =
             ssrPolyfills?.getExperimentMetricById?.(metricId) ||
             getExperimentMetricById(metricId);
           if (!metric) return null;
 
-          const ret =
-            sortBy === "metric-tags"
-              ? sortAndFilterMetricsByTags([metric], metricFilter)
-              : sortBy === "custom" && customMetricOrder
-                ? sortMetricsByCustomOrder([metric], customMetricOrder)
-                : [metric.id];
-          if (ret.length === 0) return null;
+          // Apply filtering first (independent of sorting)
+          const filteredMetrics = filterMetricsByTags(
+            [metric],
+            metricTagFilter,
+          );
+          if (filteredMetrics.length === 0) return null;
 
           const { newMetric, overrideFields } = applyMetricOverrides(
             metric,
@@ -200,7 +371,7 @@ export function useExperimentDimensionRows({
           };
         })
         .filter((table) => table?.metric) as Array<{
-        metric: ExperimentMetricInterface;
+        metric: ExperimentMetricDefinition;
         isGuardrail: boolean;
         rows: ExperimentTableRow[];
       }>;
@@ -221,18 +392,31 @@ export function useExperimentDimensionRows({
         sortDirection: sortDirection || "desc",
       };
 
-      return tables.map((table) => ({
-        ...table,
-        rows: [...table.rows].sort((a, b) => compareRows(a, b, sortOptions)),
-      }));
+      // A funnel table's rows are dimension-value parents with per-step child
+      // rows beneath each. Sort the parents but keep each parent's steps
+      // attached in step order; a flat sort would tear that grouping apart.
+      return tables.map((table) =>
+        isFactFunnelMetric(table.metric)
+          ? {
+              ...table,
+              rows: sortFunnelDimensionRows(table.rows, sortOptions),
+            }
+          : {
+              ...table,
+              rows: [...table.rows].sort((a, b) =>
+                compareRows(a, b, sortOptions),
+              ),
+            },
+      );
     }
 
     return tables;
   }, [
     results,
+    metricGroups,
     metricOverrides,
     ssrPolyfills,
-    metricFilter,
+    metricTagFilter,
     sortBy,
     sortDirection,
     customMetricOrder,
@@ -253,7 +437,6 @@ export function useExperimentDimensionRows({
 
   return {
     tables,
-    allMetricTags,
   };
 }
 
@@ -297,45 +480,100 @@ export function generateDimensionRowsForMetric({
   dimensionValuesFilter?: string[];
   overrideFields: string[];
   metricSnapshotSettings: MetricSnapshotSettings | undefined;
-  newMetric: ExperimentMetricInterface;
+  newMetric: ExperimentMetricDefinition;
 }): ExperimentTableRow[] {
   const filteredResults = includeVariation(results, dimensionValuesFilter);
 
+  const funnelSteps = isFactFunnelMetric(newMetric)
+    ? newMetric.funnelSettings.steps
+    : [];
+
+  const noData = () => ({ users: 0, value: 0, cr: 0, errorMessage: "No data" });
+
   const rows: ExperimentTableRow[] = [];
 
-  // Create a row for each dimension result
+  // One row per dimension result. For a funnel metric the dimension value is
+  // the parent (whole-funnel completion) and each step follows as a child row,
+  // mirroring the overall table's nesting one level deeper.
   filteredResults.forEach((dimensionResult) => {
-    const row: ExperimentTableRow = {
+    const parentRow: ExperimentTableRow = {
       label: dimensionResult.name,
+      dimensionValue: dimensionResult.name,
       metric: newMetric,
       metricOverrideFields: overrideFields,
       rowClass: newMetric?.inverse ? "inverse" : "",
-      variations: dimensionResult.variations.map((v) => {
-        return (
-          v.metrics?.[metricId] || {
-            users: 0,
-            value: 0,
-            cr: 0,
-            errorMessage: "No data",
-          }
-        );
-      }),
+      variations: dimensionResult.variations.map(
+        (v) => v.metrics?.[metricId] || noData(),
+      ),
       metricSnapshotSettings,
       resultGroup,
     };
 
-    rows.push(row);
+    if (!funnelSteps.length) {
+      rows.push(parentRow);
+      return;
+    }
+
+    const parentRowId = `${metricId}:${dimensionResult.name}`;
+    parentRow.numChildren = funnelSteps.length;
+    rows.push(parentRow);
+
+    funnelSteps.forEach((step, stepIndex) => {
+      const stepMetricId = funnelStepMetricId(metricId, stepIndex);
+      rows.push({
+        label: step.name,
+        dimensionValue: dimensionResult.name,
+        metric: newMetric,
+        metricOverrideFields: overrideFields,
+        rowClass: newMetric?.inverse ? "inverse" : "",
+        variations: dimensionResult.variations.map(
+          (v) => v.metrics?.[stepMetricId] || noData(),
+        ),
+        metricSnapshotSettings,
+        resultGroup,
+        numChildren: 0,
+        isChildRow: true,
+        childRowType: "funnelStep",
+        funnelStepIndex: stepIndex,
+        funnelStepOptional: step.optional,
+        parentRowId,
+        isHiddenByFilter: false,
+      });
+    });
   });
 
   return rows;
 }
 
-function sortMetricsByCustomOrder(
-  metrics: ExperimentMetricInterface[],
-  customOrder: string[],
-): string[] {
-  const metricIds = metrics.map((m) => m.id);
-  const orderedMetrics = customOrder.filter((id) => metricIds.includes(id));
-  const unorderedMetrics = metricIds.filter((id) => !customOrder.includes(id));
-  return [...orderedMetrics, ...unorderedMetrics];
+export interface FunnelDimensionRowGroup {
+  parent: ExperimentTableRow;
+  children: ExperimentTableRow[];
+}
+
+// A funnel dimension table is a flat list of dimension-value parent rows, each
+// followed by its step child rows. Group them so a parent can move without
+// detaching its steps.
+export function groupFunnelDimensionRows(
+  rows: ExperimentTableRow[],
+): FunnelDimensionRowGroup[] {
+  const groups: FunnelDimensionRowGroup[] = [];
+  for (const row of rows) {
+    if (row.isChildRow && groups.length > 0) {
+      groups[groups.length - 1].children.push(row);
+    } else {
+      groups.push({ parent: row, children: [] });
+    }
+  }
+  return groups;
+}
+
+// Sort the parent dimension rows by significance/change while keeping each
+// parent's step children beneath it in their original step order.
+export function sortFunnelDimensionRows(
+  rows: ExperimentTableRow[],
+  sortOptions: Parameters<typeof compareRows>[2],
+): ExperimentTableRow[] {
+  return groupFunnelDimensionRows(rows)
+    .sort((a, b) => compareRows(a.parent, b.parent, sortOptions))
+    .flatMap((group) => [group.parent, ...group.children]);
 }

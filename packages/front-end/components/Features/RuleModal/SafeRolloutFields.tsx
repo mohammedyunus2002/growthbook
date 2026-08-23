@@ -1,7 +1,6 @@
 import { useFormContext } from "react-hook-form";
+import { MAX_DESCRIPTION_LENGTH } from "shared/constants";
 import { FeatureInterface, FeatureRule } from "shared/types/feature";
-import { FeatureRevisionInterface } from "shared/types/feature-revision";
-import { FaExclamationTriangle } from "react-icons/fa";
 import { Box, TextField, Text, Flex, Grid } from "@radix-ui/themes";
 import {
   PiCaretUpFill,
@@ -10,28 +9,34 @@ import {
   PiLockOpenBold,
 } from "react-icons/pi";
 import { useState } from "react";
-import { useGrowthBook } from "@growthbook/growthbook-react";
 import FeatureValueField from "@/components/Features/FeatureValueField";
 import SelectField from "@/components/Forms/SelectField";
 import { FIVE_LINES_HEIGHT } from "@/components/Forms/CodeTextArea";
 import { NewExperimentRefRule, useAttributeSchema } from "@/services/features";
-import SavedGroupTargetingField from "@/components/Features/SavedGroupTargetingField";
-import ConditionInput from "@/components/Features/ConditionInput";
-import PrerequisiteTargetingField from "@/components/Features/PrerequisiteTargetingField";
+import TargetingFieldsGroup from "@/components/Features/TargetingFieldsGroup";
+import { type RuleCyclicResult } from "@/components/Features/PrerequisiteInput";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import MetricsSelector from "@/components/Experiment/MetricsSelector";
 import Checkbox from "@/ui/Checkbox";
 import useOrgSettings from "@/hooks/useOrgSettings";
 import HelperText from "@/ui/HelperText";
 import Tooltip from "@/components/Tooltip/Tooltip";
-import ScheduleInputs from "@/components/Features/ScheduleInputs";
-import { AppFeatures } from "@/types/app-features";
+import ScheduleInputs from "@/components/Features/LegacyScheduleInputs";
+import {
+  AttributeOptionWithTooltip,
+  type AttributeOptionForTooltip,
+} from "@/components/Features/AttributeOptionTooltip";
+import RuleEnvironmentScopeField, {
+  type EnvScopeProps,
+} from "@/components/Features/RuleModal/EnvironmentScopeField";
+import RuleProjectScopeField, {
+  type ProjectScopeProps,
+} from "@/components/Features/RuleModal/ProjectScopeField";
+import Callout from "@/ui/Callout";
 
 export default function SafeRolloutFields({
   feature,
   environment,
-  version,
-  revisions,
   setPrerequisiteTargetingSdkIssues,
   isCyclic,
   cyclicFeatureId,
@@ -41,12 +46,13 @@ export default function SafeRolloutFields({
   defaultValues,
   setScheduleToggleEnabled,
   scheduleToggleEnabled,
+  envScope,
+  projectScope,
+  onRuleCyclicChange,
 }: {
   feature: FeatureInterface;
   environment: string;
   defaultValues: FeatureRule | NewExperimentRefRule;
-  version: number;
-  revisions?: FeatureRevisionInterface[];
   setPrerequisiteTargetingSdkIssues: (b: boolean) => void;
   isCyclic: boolean;
   cyclicFeatureId: string | null;
@@ -55,6 +61,9 @@ export default function SafeRolloutFields({
   setScheduleToggleEnabled: (b: boolean) => void;
   mode: "create" | "edit" | "duplicate";
   isDraft: boolean;
+  envScope: EnvScopeProps;
+  projectScope: ProjectScopeProps;
+  onRuleCyclicChange?: (result: RuleCyclicResult) => void;
 }) {
   const form = useFormContext();
   const [advancedOptionsOpen, setAdvancedOptionsOpen] = useState(false);
@@ -79,10 +88,6 @@ export default function SafeRolloutFields({
 
   const durationValue = form.watch("safeRolloutFields.maxDuration.amount");
   const unit = form.watch("safeRolloutFields.maxDuration.unit") || "days";
-  const growthbook = useGrowthBook<AppFeatures>();
-  const isSafeRolloutAutoRollbackEnabled = growthbook.isOn(
-    "safe-rollout-auto-rollback",
-  );
   const unitMultipliers = {
     days: 24 * 60 * 60 * 1000,
     hours: 60 * 60 * 1000,
@@ -98,36 +103,29 @@ export default function SafeRolloutFields({
   const renderTargeting = () => {
     return (
       <>
-        <SavedGroupTargetingField
-          value={form.watch("savedGroups") || []}
-          setValue={(savedGroups) => form.setValue("savedGroups", savedGroups)}
+        <TargetingFieldsGroup
           project={feature.project || ""}
-        />
-        <hr />
-        <ConditionInput
-          defaultValue={form.watch("condition") || ""}
-          onChange={(value) => form.setValue("condition", value)}
-          key={conditionKey}
-          project={feature.project || ""}
-        />
-        <hr />
-        <PrerequisiteTargetingField
-          value={form.watch("prerequisites") || []}
-          setValue={(prerequisites) =>
+          environments={[environment]}
+          feature={feature}
+          savedGroups={form.watch("savedGroups") || []}
+          setSavedGroups={(savedGroups) =>
+            form.setValue("savedGroups", savedGroups)
+          }
+          condition={form.watch("condition") || ""}
+          setCondition={(value) => form.setValue("condition", value)}
+          conditionKey={conditionKey}
+          prerequisites={form.watch("prerequisites") || []}
+          setPrerequisites={(prerequisites) =>
             form.setValue("prerequisites", prerequisites)
           }
-          feature={feature}
-          revisions={revisions}
-          version={version}
-          environments={[environment]}
           setPrerequisiteTargetingSdkIssues={setPrerequisiteTargetingSdkIssues}
+          onRuleCyclicChange={onRuleCyclicChange}
         />
         {isCyclic && (
-          <div className="alert alert-danger">
-            <FaExclamationTriangle /> A prerequisite (
-            <code>{cyclicFeatureId}</code>) creates a circular dependency.
-            Remove this prerequisite to continue.
-          </div>
+          <Callout status="error">
+            A prerequisite (<code>{cyclicFeatureId}</code>) creates a circular
+            dependency. Remove this prerequisite to continue.
+          </Callout>
         )}
 
         {mode === "duplicate" && !!form.watch("seed") && (
@@ -165,14 +163,33 @@ export default function SafeRolloutFields({
     return (
       <>
         <SelectField
+          size="legacy"
+          withRadixThemedPortal
           disabled={disableFields}
           label="Sample based on attribute"
           options={attributeSchema
             .filter((s) => !hasHashAttributes || s.hashAttribute)
-            .map((s) => ({ label: s.property, value: s.property }))}
+            .map((s) => ({
+              label: s.property,
+              value: s.property,
+              description: s.description,
+              tags: s.tags,
+              datatype: s.datatype,
+              hashAttribute: s.hashAttribute,
+            }))}
           value={form.watch("hashAttribute")}
           onChange={(v) => {
             form.setValue("hashAttribute", v);
+          }}
+          formatOptionLabel={(o, meta) => {
+            return (
+              <AttributeOptionWithTooltip
+                option={o as AttributeOptionForTooltip}
+                context={meta.context}
+              >
+                {o.label}
+              </AttributeOptionWithTooltip>
+            );
           }}
           className="mb-2"
           required
@@ -208,6 +225,7 @@ export default function SafeRolloutFields({
         <div className="bg-highlight rounded p-3 mb-4">
           <div className="mb-3 pb-1">
             <SelectField
+              size="legacy"
               label="Data source"
               className="portal-overflow-ellipsis"
               options={datasources.map((d) => {
@@ -229,16 +247,17 @@ export default function SafeRolloutFields({
               disabled={!dataSourceOptions || disableFields}
             />
             {dataSourceOptions.length === 0 && (
-              <div className="alert alert-warning mt-2">
+              <Callout status="warning" mt="2">
                 <small>
                   No data sources configured. Please add a data source in the
                   settings.
                 </small>
-              </div>
+              </Callout>
             )}
           </div>
           <div className="pb-1">
             <SelectField
+              size="legacy"
               label="Experiment assignment table"
               className="portal-overflow-ellipsis"
               options={exposureQueries.map((q) => ({
@@ -289,7 +308,6 @@ export default function SafeRolloutFields({
               includeFacts={true}
               forceSingleMetric={false}
               includeGroups={true}
-              excludeQuantiles={true}
               selected={
                 form.watch("safeRolloutFields.guardrailMetricIds") || []
               }
@@ -442,9 +460,12 @@ export default function SafeRolloutFields({
       </Text>
       <TextField.Root
         mb="6"
+        maxLength={MAX_DESCRIPTION_LENGTH}
         {...form.register("description")}
         placeholder="Short human-readable description of the safe rollout"
       />
+      <RuleEnvironmentScopeField {...envScope} mt="2" mb="7" />
+      <RuleProjectScopeField {...projectScope} mb="7" />
       {renderVariationFieldSelector()}
       {renderDataAndMetrics()}
       <ScheduleInputs
@@ -454,18 +475,16 @@ export default function SafeRolloutFields({
         scheduleToggleEnabled={scheduleToggleEnabled}
         setScheduleToggleEnabled={setScheduleToggleEnabled}
       />
-      {isSafeRolloutAutoRollbackEnabled && (
-        <Checkbox
-          id="autoRollback"
-          value={form.watch("safeRolloutFields.autoRollback")}
-          setValue={(v) => form.setValue("safeRolloutFields.autoRollback", v)}
-          disabled={disableFields}
-          label="Auto Rollback"
-          weight="bold"
-          description="Automatically rollback when unhealthy or a guardrail fails"
-          mb="4"
-        />
-      )}
+      <Checkbox
+        id="autoRollback"
+        value={form.watch("safeRolloutFields.autoRollback")}
+        setValue={(v) => form.setValue("safeRolloutFields.autoRollback", v)}
+        disabled={disableFields}
+        label="Auto Rollback"
+        weight="bold"
+        description="Automatically rollback when unhealthy or a guardrail fails"
+        mb="4"
+      />
 
       <div className="mt-3">{renderTargeting()}</div>
     </>

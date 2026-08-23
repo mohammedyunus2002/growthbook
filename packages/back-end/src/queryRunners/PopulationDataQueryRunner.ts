@@ -1,3 +1,4 @@
+import { UpdateProps } from "shared/types/base-model";
 import {
   ExperimentMetricInterface,
   isBinomialMetric,
@@ -25,12 +26,13 @@ import {
   PopulationDataMetric,
 } from "shared/types/population-data";
 import { ExperimentSnapshotSettings } from "shared/types/experiment-snapshot";
+import { buildUnitsQuerySettingsFromSnapshot } from "shared/util";
 import { ApiReqContext } from "back-end/types/api";
 import { SourceIntegrationInterface } from "back-end/src/types/Integration";
 import { expandDenominatorMetrics } from "back-end/src/util/sql";
 import { FactTableMap } from "back-end/src/models/FactTableModel";
 import SqlIntegration from "back-end/src/integrations/SqlIntegration";
-import { getFactMetricGroups } from "back-end/src/queryRunners/ExperimentResultsQueryRunner";
+import { getFactMetricGroups } from "back-end/src/services/experimentQueries/experimentQueries";
 import {
   QueryRunner,
   QueryMap,
@@ -98,6 +100,11 @@ export const startPopulationDataQueries = async (
     }
   }
 
+  const unitsSettings = buildUnitsQuerySettingsFromSnapshot(settings, {
+    query: "",
+    userIdType: params.populationSettings.userIdType,
+  });
+
   for (const m of legacyMetricSingles) {
     if (
       !integration.getPopulationMetricQuery ||
@@ -125,6 +132,7 @@ export const startPopulationDataQueries = async (
       segment: segment,
       settings,
       unitsSource: "otherQuery",
+      unitsSettings,
       factTableMap: params.factTableMap,
       populationSettings: params.populationSettings,
     };
@@ -134,10 +142,11 @@ export const startPopulationDataQueries = async (
         name: m.id,
         query: integration.getPopulationMetricQuery(queryParams),
         dependencies: [],
-        run: (query, setExternalId) =>
+        run: (query, setExternalId, queryMetadata) =>
           (integration as SqlIntegration).runPopulationMetricQuery(
             query,
             setExternalId,
+            queryMetadata,
           ),
         queryType: "populationMetric",
       }),
@@ -159,6 +168,7 @@ export const startPopulationDataQueries = async (
       segment: segment,
       settings,
       unitsSource: "otherQuery",
+      unitsSettings,
       factTableMap: params.factTableMap,
       populationSettings: params.populationSettings,
     };
@@ -168,10 +178,11 @@ export const startPopulationDataQueries = async (
         name: `group_${i}`,
         query: integration.getPopulationFactMetricsQuery(queryParams),
         dependencies: [],
-        run: (query, setExternalId) =>
+        run: (query, setExternalId, queryMetadata) =>
           (integration as SqlIntegration).runPopulationFactMetricsQuery(
             query,
             setExternalId,
+            queryMetadata,
           ),
         queryType: "populationMultiMetric",
       }),
@@ -370,7 +381,7 @@ export class PopulationDataQueryRunner extends QueryRunner<
     result?: PopulationDataResult;
     error?: string;
   }): Promise<PopulationDataInterface> {
-    const updates: Partial<PopulationDataInterface> = {
+    const updates: UpdateProps<PopulationDataInterface> = {
       queries,
       runStarted,
       error,

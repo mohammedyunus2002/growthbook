@@ -1,5 +1,5 @@
 import { ExperimentResultStatusData } from "shared/types/experiment";
-import { HoldoutInterface } from "shared/validators";
+import { HoldoutInterfaceStringDates } from "shared/validators";
 import Button from "@/ui/Button";
 
 export interface Props {
@@ -7,7 +7,7 @@ export interface Props {
   editTargeting?: (() => void) | null;
   isBandit?: boolean;
   runningExperimentStatus?: ExperimentResultStatusData;
-  holdout?: HoldoutInterface;
+  holdout?: HoldoutInterfaceStringDates;
 }
 
 export default function ExperimentActionButtons({
@@ -22,11 +22,12 @@ export default function ExperimentActionButtons({
   const readyForDecision =
     runningStatus === "ship-now" ||
     runningStatus === "ready-for-review" ||
+    runningStatus === "scheduled-end-review" ||
     runningStatus === "rollback-now";
   const displayCTAText = () => {
     if (holdout) {
       return !holdout?.analysisStartDate
-        ? "Start Analysis Period"
+        ? "Start Analysis Phase"
         : "Stop Holdout";
     }
     if (readyForDecision) {

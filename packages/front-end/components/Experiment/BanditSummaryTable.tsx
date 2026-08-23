@@ -3,7 +3,10 @@ import { CSSTransition } from "react-transition-group";
 import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { BanditEvent } from "shared/validators";
 import clsx from "clsx";
-import { ExperimentMetricInterface } from "shared/experiments";
+import {
+  ExperimentMetricDefinition,
+  getLatestPhaseVariations,
+} from "shared/experiments";
 import { SnapshotMetric } from "shared/types/experiment-snapshot";
 import { getVariationColor } from "@/services/features";
 import ResultsVariationsFilter from "@/components/Experiment/ResultsVariationsFilter";
@@ -14,6 +17,7 @@ import { getExperimentMetricFormatter } from "@/services/metrics";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import { useCurrency } from "@/hooks/useCurrency";
 import { SSRPolyfills } from "@/hooks/useSSRPolyfills";
+import VariationLabel from "@/ui/VariationLabel";
 import AlignedGraph from "./AlignedGraph";
 
 export const WIN_THRESHOLD_PROBABILITY = 0.95;
@@ -22,7 +26,7 @@ const ROW_HEIGHT_CONDENSED = 34;
 
 export type BanditSummaryTableProps = {
   experiment: ExperimentInterfaceStringDates;
-  metric: ExperimentMetricInterface | null;
+  metric: ExperimentMetricDefinition | null;
   phase: number;
   isTabActive: boolean;
   ssrPolyfills?: SSRPolyfills;
@@ -63,10 +67,10 @@ export default function BanditSummaryTable({
 
   const phaseObj = experiment.phases[phase];
 
-  const variations = experiment.variations.map((v, i) => {
+  const variations = getLatestPhaseVariations(experiment).map((v) => {
     return {
-      id: v.key || i + "",
-      index: i,
+      id: v.key || v.index + "",
+      index: v.index,
       name: v.name,
     };
   });
@@ -345,25 +349,12 @@ export default function BanditSummaryTable({
                     className="results-variation-row align-items-center"
                     key={j}
                   >
-                    <td
-                      className={`variation with-variation-label variation${v.index}`}
-                      style={{ width: 280 }}
-                    >
-                      <div className="d-flex align-items-center">
-                        <span
-                          className="label ml-1"
-                          style={{ width: 20, height: 20 }}
-                        >
-                          {v.index}
-                        </span>
-                        <span
-                          className="d-inline-block text-ellipsis"
-                          title={v.name}
-                          style={{ width: 225 }}
-                        >
-                          {v.name}
-                        </span>
-                      </div>
+                    <td style={{ width: 280 }}>
+                      <VariationLabel
+                        number={v.index}
+                        name={v.name}
+                        size="md"
+                      />
                     </td>
                     <td className="text-center px-0">
                       {numberFormatter.format(
@@ -387,7 +378,7 @@ export default function BanditSummaryTable({
                           meanText
                         ) : (
                           <em className="text-muted">
-                            <small>not enough data</small>
+                            <small>Not enough data</small>
                           </em>
                         )}
                       </span>

@@ -1,13 +1,13 @@
 import { ExperimentSnapshotReportInterface } from "shared/types/report";
 import React, { RefObject, useState } from "react";
 import { useForm } from "react-hook-form";
-import {
-  AttributionModel,
-  ExperimentInterfaceStringDates,
-} from "shared/types/experiment";
+import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { getValidDate } from "shared/dates";
 import { DifferenceType } from "shared/types/stats";
-import { DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER } from "shared/constants";
+import {
+  DEFAULT_LOOKBACK_OVERRIDE_VALUE_UNIT,
+  DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER,
+} from "shared/constants";
 import Button from "@/ui/Button";
 import DatePicker from "@/components/DatePicker";
 import useApi from "@/hooks/useApi";
@@ -22,11 +22,11 @@ import ExperimentMetricsSelector from "@/components/Experiment/ExperimentMetrics
 import CustomMetricSlicesSelector from "@/components/Experiment/CustomMetricSlicesSelector";
 import Tooltip from "@/components/Tooltip/Tooltip";
 import { useDefinitions } from "@/services/DefinitionsContext";
-import { AttributionModelTooltip } from "@/components/Experiment/AttributionModelTooltip";
+import MetricAnalysisWindowSelector from "@/components/Experiment/MetricAnalysisWindowSelector";
 import MetricsOverridesSelector from "@/components/Experiment/MetricsOverridesSelector";
 import StatsEngineSelect from "@/components/Settings/forms/StatsEngineSelect";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
-import { GBCuped, GBInfo, GBSequential } from "@/components/Icons";
+import { GBCuped, GBSequential } from "@/components/Icons";
 import { hasFileConfig } from "@/services/env";
 import useOrgSettings from "@/hooks/useOrgSettings";
 import { useUser } from "@/services/UserContext";
@@ -74,6 +74,21 @@ export default function ConfigureReport({
                 .substr(0, 16),
             )
           : null,
+        lookbackOverride: report.experimentAnalysisSettings?.lookbackOverride
+          ? report.experimentAnalysisSettings.lookbackOverride.type === "date"
+            ? {
+                type: "date" as const,
+                value: getValidDate(
+                  report.experimentAnalysisSettings.lookbackOverride.value,
+                ),
+              }
+            : {
+                ...report.experimentAnalysisSettings.lookbackOverride,
+                valueUnit:
+                  report.experimentAnalysisSettings.lookbackOverride
+                    .valueUnit ?? DEFAULT_LOOKBACK_OVERRIDE_VALUE_UNIT,
+              }
+          : undefined,
       },
     },
   });
@@ -119,8 +134,6 @@ export default function ConfigureReport({
     !form.watch("experimentAnalysisSettings.dateEnded"),
   );
   const [upgradeModal, setUpgradeModal] = useState(false);
-  const [hasMetricOverrideRiskError, setHasMetricOverrideRiskError] =
-    useState(false);
 
   const { data: experimentData } = useApi<{
     experiment: ExperimentInterfaceStringDates;
@@ -171,9 +184,7 @@ export default function ConfigureReport({
       trackingEventModalType="configure-report"
       close={close}
       header={`Edit Analysis`}
-      useRadixButton={true}
       cta="Save and refresh"
-      ctaEnabled={!hasMetricOverrideRiskError}
       submit={submit}
       size="lg"
       bodyClassName="px-0 pt-0"
@@ -215,6 +226,7 @@ export default function ConfigureReport({
               newUi={false}
             />
             <SelectField
+              size="legacy"
               label="Difference Type"
               value={
                 form.watch("experimentAnalysisSettings.differenceType") ||
@@ -260,7 +272,7 @@ export default function ConfigureReport({
                 />
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   style={{ height: 45, textAlign: "left" }}
                   onClick={() => {
                     form.setValue(
@@ -290,7 +302,7 @@ export default function ConfigureReport({
                   <div className="mt-1">
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="md"
                       mt="2"
                       style={{ height: 45, textAlign: "left" }}
                       onClick={() => {
@@ -329,6 +341,7 @@ export default function ConfigureReport({
               <div style={{ width: "50%" }}>
                 {useToday ? (
                   <Field
+                    size="legacy"
                     label="End (UTC)"
                     containerClassName="mb-2"
                     readOnly
@@ -358,7 +371,7 @@ export default function ConfigureReport({
                     <div className="flex-1">
                       <Button
                         variant="ghost"
-                        size="sm"
+                        size="md"
                         mt="2"
                         style={{ height: 45, textAlign: "left" }}
                         onClick={() => {
@@ -443,6 +456,7 @@ export default function ConfigureReport({
                   guardrailMetrics,
                 )
               }
+              experimentType={experiment?.type}
             />
 
             <div className="mt-4">
@@ -468,94 +482,84 @@ export default function ConfigureReport({
                     slices,
                   )
                 }
-                pinnedMetricSlices={
-                  form.watch("experimentAnalysisSettings.pinnedMetricSlices") ??
-                  []
-                }
-                setPinnedMetricSlices={(slices) =>
-                  form.setValue(
-                    "experimentAnalysisSettings.pinnedMetricSlices",
-                    slices,
-                  )
-                }
               />
             </div>
 
             <hr className="my-4" />
-            {datasourceProperties?.separateExperimentResultQueries && (
-              <SelectField
-                label={
-                  <AttributionModelTooltip>
-                    Conversion Window Override <GBInfo />
-                  </AttributionModelTooltip>
-                }
-                value={
-                  form.watch("experimentAnalysisSettings.attributionModel") ||
-                  "firstExposure"
-                }
-                onChange={(value) => {
-                  const model = value as AttributionModel;
-                  form.setValue(
-                    "experimentAnalysisSettings.attributionModel",
-                    model,
-                  );
-                }}
-                options={[
-                  {
-                    label: "Respect Conversion Windows",
-                    value: "firstExposure",
-                  },
-                  {
-                    label: "Ignore Conversion Windows",
-                    value: "experimentDuration",
-                  },
-                ]}
-              />
-            )}
-            {hasMetrics && experiment && (
-              <div className="form-group mt-4 mb-2">
-                <PremiumTooltip commercialFeature="override-metrics">
-                  <label className="font-weight-bold mb-0">
-                    Metric Overrides
-                  </label>
-                </PremiumTooltip>
-                <small className="form-text text-muted mb-2">
-                  Override metric behaviors within this experiment. Leave any
-                  fields empty that you do not want to override.
-                </small>
-                <MetricsOverridesSelector
-                  experiment={experiment}
-                  form={form}
-                  fieldMap={{
-                    goalMetrics: "experimentAnalysisSettings.goalMetrics",
-                    guardrailMetrics:
-                      "experimentAnalysisSettings.guardrailMetrics",
-                    secondaryMetrics:
-                      "experimentAnalysisSettings.secondaryMetrics",
-                    activationMetric:
-                      "experimentAnalysisSettings.activationMetric",
-                    metricOverrides:
-                      "experimentAnalysisSettings.metricOverrides",
-                  }}
-                  disabled={!hasOverrideMetricsFeature}
-                  setHasMetricOverrideRiskError={(v: boolean) =>
-                    setHasMetricOverrideRiskError(v)
+            {datasourceProperties?.separateExperimentResultQueries &&
+              experiment && (
+                <MetricAnalysisWindowSelector
+                  attributionModel={
+                    form.watch("experimentAnalysisSettings.attributionModel") ||
+                    "firstExposure"
                   }
+                  lookbackOverride={
+                    form.watch("experimentAnalysisSettings.lookbackOverride") ??
+                    undefined
+                  }
+                  onAttributionModelChange={(v) =>
+                    form.setValue(
+                      "experimentAnalysisSettings.attributionModel",
+                      v,
+                    )
+                  }
+                  onLookbackOverrideChange={(v) =>
+                    form.setValue(
+                      "experimentAnalysisSettings.lookbackOverride",
+                      v,
+                    )
+                  }
+                  analysisEndDate={
+                    form.watch("experimentAnalysisSettings.dateEnded") ??
+                    new Date()
+                  }
+                  disabled={false}
                 />
-                {!hasOverrideMetricsFeature && (
-                  <UpgradeMessage
-                    showUpgradeModal={() => setUpgradeModal(true)}
-                    commercialFeature="override-metrics"
-                    upgradeMessage="override metrics"
+              )}
+            {hasMetrics && experiment && (
+              <>
+                <div className="form-group mt-4 mb-2">
+                  <PremiumTooltip commercialFeature="override-metrics">
+                    <label className="font-weight-bold mb-0">
+                      Metric Overrides
+                    </label>
+                  </PremiumTooltip>
+                  <small className="form-text text-muted mb-2">
+                    Override metric behaviors within this experiment. Leave any
+                    fields empty that you do not want to override.
+                  </small>
+                  <MetricsOverridesSelector
+                    experiment={experiment}
+                    form={form}
+                    fieldMap={{
+                      goalMetrics: "experimentAnalysisSettings.goalMetrics",
+                      guardrailMetrics:
+                        "experimentAnalysisSettings.guardrailMetrics",
+                      secondaryMetrics:
+                        "experimentAnalysisSettings.secondaryMetrics",
+                      activationMetric:
+                        "experimentAnalysisSettings.activationMetric",
+                      metricOverrides:
+                        "experimentAnalysisSettings.metricOverrides",
+                    }}
+                    disabled={!hasOverrideMetricsFeature}
                   />
-                )}
-              </div>
+                  {!hasOverrideMetricsFeature && (
+                    <UpgradeMessage
+                      showUpgradeModal={() => setUpgradeModal(true)}
+                      commercialFeature="override-metrics"
+                      upgradeMessage="override metrics"
+                    />
+                  )}
+                </div>
+              </>
             )}
           </TabsContent>
 
           <TabsContent value="analysis">
             {exposureQueries ? (
               <SelectField
+                size="legacy"
                 label={
                   <>
                     Experiment Assignment Table{" "}
@@ -596,6 +600,7 @@ export default function ConfigureReport({
               />
             ) : null}
             <Field
+              size="legacy"
               label="Tracking Key"
               {...form.register(`experimentAnalysisSettings.trackingKey`)}
               helpText="Unique identifier for this Experiment, used to track impressions and analyze results"
@@ -610,11 +615,16 @@ export default function ConfigureReport({
               label={
                 <>
                   Activation Metric{" "}
-                  <MetricsSelectorTooltip onlyBinomial={true} />
+                  <MetricsSelectorTooltip
+                    onlyBinomial={true}
+                    noFactFunnelMetrics={true}
+                    isSingular={true}
+                  />
                 </>
               }
               initialOption="None"
               onlyBinomial
+              filterFactFunnelMetrics
               value={
                 form.watch("experimentAnalysisSettings.activationMetric") || ""
               }
@@ -628,6 +638,7 @@ export default function ConfigureReport({
             />
             {datasourceProperties?.experimentSegments && (
               <SelectField
+                size="legacy"
                 label="Segment"
                 value={form.watch("experimentAnalysisSettings.segment") || ""}
                 onChange={(value) =>
@@ -648,6 +659,7 @@ export default function ConfigureReport({
             )}
             {datasourceProperties?.separateExperimentResultQueries && (
               <SelectField
+                size="legacy"
                 label="Metric Conversion Windows"
                 value={
                   form.watch("experimentAnalysisSettings.skipPartialData")
@@ -685,6 +697,7 @@ export default function ConfigureReport({
               className=""
             />
             <SelectField
+              size="legacy"
               label={
                 <PremiumTooltip commercialFeature="regression-adjustment">
                   <GBCuped className="mr-1" />
@@ -721,6 +734,7 @@ export default function ConfigureReport({
               <div className="d-flex" style={{ gap: "1rem" }}>
                 <div className="flex-1">
                   <SelectField
+                    size="legacy"
                     label={
                       <PremiumTooltip commercialFeature="sequential-testing">
                         <GBSequential className="mr-1" />
@@ -759,6 +773,7 @@ export default function ConfigureReport({
                 ) ? (
                   <div style={{ width: 250 }}>
                     <Field
+                      size="legacy"
                       label="Tuning parameter"
                       type="number"
                       min="0"
@@ -795,6 +810,7 @@ export default function ConfigureReport({
               <div className="row mt-4">
                 <div className="col pr-3">
                   <Field
+                    size="legacy"
                     label="Custom SQL Filter"
                     labelClassName="font-weight-bold"
                     {...form.register("experimentAnalysisSettings.queryFilter")}
@@ -867,6 +883,13 @@ export default function ConfigureReport({
                 form.setValue(
                   `experimentMetadata.phases.${latestPhaseIndex}.variationWeights`,
                   v.map((v) => v.weight),
+                );
+                form.setValue(
+                  `experimentMetadata.phases.${latestPhaseIndex}.variations`,
+                  v.map((data) => ({
+                    id: data.id,
+                    status: "active" as const,
+                  })),
                 );
               }}
               coverage={form.watch(

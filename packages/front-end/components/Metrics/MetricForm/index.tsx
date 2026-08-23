@@ -16,10 +16,13 @@ import {
   DEFAULT_REGRESSION_ADJUSTMENT_ENABLED,
   DEFAULT_WIN_RISK_THRESHOLD,
 } from "shared/constants";
-import { isDemoDatasourceProject } from "shared/demo-datasource";
+import {
+  getDefaultProjectsForNewResource,
+  isDemoDatasourceProject,
+} from "shared/demo-datasource";
 import { isProjectListValidForProject } from "shared/util";
-import Link from "next/link";
 import { isBinomialMetric } from "shared/experiments";
+import Link from "@/ui/Link";
 import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
 import { getInitialMetricQuery, validateSQL } from "@/services/datasources";
 import { useDefinitions } from "@/services/DefinitionsContext";
@@ -32,10 +35,9 @@ import Code from "@/components/SyntaxHighlighting/Code";
 import TagsInput from "@/components/Tags/TagsInput";
 import Field from "@/components/Forms/Field";
 import SelectField from "@/components/Forms/SelectField";
-import MultiSelectField from "@/components/Forms/MultiSelectField";
+import MultiSelectField from "@/ui/MultiSelectField";
 import SQLInputField from "@/components/SQLInputField";
 import GoogleAnalyticsMetrics from "@/components/Metrics/GoogleAnalyticsMetrics";
-import RiskThresholds from "@/components/Metrics/MetricForm/RiskThresholds";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import Switch from "@/ui/Switch";
 import useOrgSettings from "@/hooks/useOrgSettings";
@@ -227,6 +229,7 @@ const MetricForm: FC<MetricFormProps> = ({
   const settings = useOrgSettings();
   const { hasCommercialFeature } = useUser();
   const permissionsUtil = usePermissionsUtil();
+  const { apiCall, orgId } = useAuth();
 
   const [step, setStep] = useState(initialStep);
   const [showAdvanced, setShowAdvanced] = useState(advanced);
@@ -336,9 +339,10 @@ const MetricForm: FC<MetricFormProps> = ({
       projects:
         source === "datasource-detail" || edit || duplicate
           ? current.projects || []
-          : project
-            ? [project]
-            : [],
+          : getDefaultProjectsForNewResource({
+              project,
+              organizationId: orgId || undefined,
+            }),
       winRisk: (current.winRisk || DEFAULT_WIN_RISK_THRESHOLD) * 100,
       loseRisk: (current.loseRisk || DEFAULT_LOSE_RISK_THRESHOLD) * 100,
       maxPercentChange: getMaxPercentageChangeForMetric(current) * 100,
@@ -365,8 +369,6 @@ const MetricForm: FC<MetricFormProps> = ({
       managedBy: current.managedBy || MANAGED_BY_EMPTY,
     },
   });
-
-  const { apiCall, orgId } = useAuth();
 
   const type = form.watch("type");
 
@@ -535,8 +537,6 @@ const MetricForm: FC<MetricFormProps> = ({
       targetMDE: targetMDE / 100,
     };
 
-    if (value.loseRisk < value.winRisk) return;
-
     const body = JSON.stringify(sendValue);
 
     if (edit) {
@@ -561,11 +561,6 @@ const MetricForm: FC<MetricFormProps> = ({
 
     onSuccess && onSuccess();
   });
-
-  const riskError =
-    value.loseRisk < value.winRisk
-      ? "The acceptable risk percentage cannot be higher than the too risky percentage"
-      : "";
 
   const regressionAdjustmentDaysHighlightColor =
     value.regressionAdjustmentDays > 28 || value.regressionAdjustmentDays < 7
@@ -605,10 +600,7 @@ const MetricForm: FC<MetricFormProps> = ({
   let ctaEnabled = true;
   let disabledMessage: string | null = null;
 
-  if (riskError) {
-    ctaEnabled = false;
-    disabledMessage = riskError;
-  } else if (!permissionsUtil.canCreateMetric({ projects: value.projects })) {
+  if (!permissionsUtil.canCreateMetric({ projects: value.projects })) {
     ctaEnabled = false;
     disabledMessage = "You don't have permission to create metrics.";
   }
@@ -647,6 +639,7 @@ const MetricForm: FC<MetricFormProps> = ({
         />
       )}
       <PagedModal
+        useRadixButton={false}
         trackingEventModalType={trackingEventModalType}
         inline={inline}
         header={edit ? "Edit Metric" : "New Metric"}
@@ -733,6 +726,7 @@ const MetricForm: FC<MetricFormProps> = ({
           {projects?.length > 0 && (
             <div className="form-group">
               <MultiSelectField
+                legacyHeight
                 label={
                   <>
                     Projects{" "}
@@ -743,7 +737,7 @@ const MetricForm: FC<MetricFormProps> = ({
                     />
                   </>
                 }
-                placeholder="All projects"
+                placeholder="All Projects"
                 value={value.projects || []}
                 options={projectOptions}
                 onChange={(v) => form.setValue("projects", v)}
@@ -754,6 +748,7 @@ const MetricForm: FC<MetricFormProps> = ({
             </div>
           )}
           <SelectField
+            size="legacy"
             label="Data Source"
             value={
               isExclusivelyForDemoDatasourceProject && demoDataSourceId
@@ -867,6 +862,7 @@ const MetricForm: FC<MetricFormProps> = ({
               {supportsSQL && value.queryFormat === "sql" ? (
                 <div>
                   <MultiSelectField
+                    legacyHeight
                     value={value.userIdTypes}
                     onChange={(types) => {
                       form.setValue("userIdTypes", types);
@@ -882,6 +878,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   {value.sql && usesEventName(value.sql) && (
                     <div className="form-group">
                       <Field
+                        size="legacy"
                         label="Event Name"
                         placeholder={value.name}
                         helpText="The event name associated with this metric.  This can then be referenced in your sql template as {{eventName}}."
@@ -894,6 +891,7 @@ const MetricForm: FC<MetricFormProps> = ({
                     value.type != "binomial" && (
                       <div className="form-group">
                         <Field
+                          size="legacy"
                           label="Value Column"
                           helpText={
                             value.type === "count"
@@ -953,6 +951,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   {value.type !== "binomial" && (
                     <div className="mb-2">
                       <Field
+                        size="legacy"
                         label="User Value Aggregation"
                         placeholder="SUM(value)"
                         textarea
@@ -967,6 +966,7 @@ const MetricForm: FC<MetricFormProps> = ({
                     </div>
                   )}
                   <SelectField
+                    size="legacy"
                     label="Denominator"
                     options={denominatorOptions}
                     initialOption="All Experiment Users"
@@ -985,6 +985,7 @@ const MetricForm: FC<MetricFormProps> = ({
               ) : (
                 <>
                   <SelectField
+                    size="legacy"
                     label={`${table} Name`}
                     createable
                     placeholder={`${table} name...`}
@@ -998,6 +999,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   />
                   {value.type !== "binomial" && (
                     <SelectField
+                      size="legacy"
                       placeholder={column}
                       label={supportsSQL ? "Column" : "Event Value"}
                       options={columnOptions}
@@ -1013,6 +1015,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   )}
                   {value.type !== "binomial" && !supportsSQL && (
                     <Field
+                      size="legacy"
                       label="User Value Aggregation"
                       placeholder="sum(values)"
                       textarea
@@ -1032,6 +1035,7 @@ const MetricForm: FC<MetricFormProps> = ({
                           {i > 0 && <div className="col-auto">AND</div>}
                           <div className="col-auto mb-1">
                             <SelectField
+                              size="legacy"
                               createable
                               placeholder={column}
                               options={columnOptions}
@@ -1044,6 +1048,7 @@ const MetricForm: FC<MetricFormProps> = ({
                           </div>
                           <div className="col-auto mb-1">
                             <SelectField
+                              size="legacy"
                               value={form.watch(`conditions.${i}.operator`)}
                               onChange={(v) =>
                                 form.setValue(
@@ -1083,6 +1088,7 @@ const MetricForm: FC<MetricFormProps> = ({
                           </div>
                           <div className="col-auto mb-1">
                             <Field
+                              size="legacy"
                               required
                               placeholder="Value"
                               textarea={
@@ -1125,6 +1131,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   )}
                   {customzeTimestamp && (
                     <SelectField
+                      size="legacy"
                       label="Timestamp Column"
                       createable
                       options={columnOptions}
@@ -1137,6 +1144,7 @@ const MetricForm: FC<MetricFormProps> = ({
                   )}
                   {customizeUserIds && (
                     <MultiSelectField
+                      legacyHeight
                       value={value.userIdTypes}
                       onChange={(types) => {
                         form.setValue("userIdTypes", types);
@@ -1155,6 +1163,7 @@ const MetricForm: FC<MetricFormProps> = ({
                       return (
                         <div key={type}>
                           <SelectField
+                            size="legacy"
                             label={type + " Column"}
                             createable
                             options={columnOptions}
@@ -1200,6 +1209,7 @@ const MetricForm: FC<MetricFormProps> = ({
           <div className="form-group">
             <label>What is the Goal?</label>
             <SelectField
+              size="legacy"
               value={form.watch("inverse") ? "1" : "0"}
               onChange={(v) => {
                 form.setValue("inverse", v === "1");
@@ -1260,6 +1270,7 @@ const MetricForm: FC<MetricFormProps> = ({
               {ignoreNullsSupported && value.type !== "binomial" && (
                 <div className="form-group">
                   <SelectField
+                    size="legacy"
                     label="Converted Users Only"
                     required
                     value={form.watch("ignoreNulls") ? "1" : "0"}
@@ -1284,14 +1295,6 @@ const MetricForm: FC<MetricFormProps> = ({
                   </small>
                 </div>
               )}
-
-              <RiskThresholds
-                winRisk={value.winRisk}
-                loseRisk={value.loseRisk}
-                winRiskRegisterField={form.register("winRisk")}
-                loseRiskRegisterField={form.register("loseRisk")}
-                riskError={riskError}
-              />
 
               <div className="form-group">
                 <label>Minimum Metric Total</label>
@@ -1319,6 +1322,7 @@ const MetricForm: FC<MetricFormProps> = ({
                 </small>
               </div>
               <Field
+                size="legacy"
                 label="Max Percent Change"
                 type="number"
                 step="any"
@@ -1330,6 +1334,7 @@ const MetricForm: FC<MetricFormProps> = ({
             }%)`}
               />
               <Field
+                size="legacy"
                 label="Min Percent Change"
                 type="number"
                 step="any"
@@ -1341,6 +1346,7 @@ const MetricForm: FC<MetricFormProps> = ({
             }%)`}
               />
               <Field
+                size="legacy"
                 label="Target MDE"
                 type="number"
                 step="any"
@@ -1412,6 +1418,7 @@ const MetricForm: FC<MetricFormProps> = ({
                         }}
                       >
                         <Field
+                          size="legacy"
                           label="Pre-exposure lookback period (days)"
                           type="number"
                           style={{
@@ -1426,7 +1433,6 @@ const MetricForm: FC<MetricFormProps> = ({
                           inputGroupClassName="d-inline-flex w-150px"
                           append="days"
                           min="0"
-                          max="100"
                           disabled={!hasRegressionAdjustmentFeature}
                           helpText={
                             <>
@@ -1441,7 +1447,7 @@ const MetricForm: FC<MetricFormProps> = ({
                           {...form.register("regressionAdjustmentDays", {
                             valueAsNumber: true,
                             validate: (v) => {
-                              return !(v <= 0 || v > 100);
+                              return v === undefined || v > 0;
                             },
                           })}
                         />

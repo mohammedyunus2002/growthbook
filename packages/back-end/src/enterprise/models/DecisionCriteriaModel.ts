@@ -7,6 +7,7 @@ import { MakeModelClass } from "back-end/src/models/BaseModel";
 const BaseClass = MakeModelClass({
   schema: decisionCriteriaInterface,
   collectionName: "decisioncriteria",
+  affectsDefinitionsVersion: true,
   idPrefix: "deccrit__",
   auditLog: {
     entity: "decisionCriteria",
@@ -14,7 +15,7 @@ const BaseClass = MakeModelClass({
     updateEvent: "decisionCriteria.update",
     deleteEvent: "decisionCriteria.delete",
   },
-  globallyUniqueIds: false,
+  globallyUniquePrimaryKeys: false,
 });
 
 // TODO: project scoping or make more permissive

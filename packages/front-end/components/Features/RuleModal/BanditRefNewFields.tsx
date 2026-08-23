@@ -1,14 +1,15 @@
 import { useFormContext } from "react-hook-form";
+import { useEffect } from "react";
+import { MAX_DESCRIPTION_LENGTH } from "shared/constants";
 import {
   FeatureInterface,
   FeaturePrerequisite,
   SavedGroupTargeting,
 } from "shared/types/feature";
-import React, { useEffect } from "react";
-import { FaExclamationTriangle } from "react-icons/fa";
-import { FeatureRevisionInterface } from "shared/types/feature-revision";
 import Collapsible from "react-collapsible";
 import { PiCaretRightFill } from "react-icons/pi";
+import { Box, Separator } from "@radix-ui/themes";
+import Text from "@/ui/Text";
 import Field from "@/components/Forms/Field";
 import useOrgSettings from "@/hooks/useOrgSettings";
 import SelectField from "@/components/Forms/SelectField";
@@ -21,14 +22,13 @@ import {
   useAttributeSchema,
 } from "@/services/features";
 import useSDKConnections from "@/hooks/useSDKConnections";
-import SavedGroupTargetingField from "@/components/Features/SavedGroupTargetingField";
-import ConditionInput from "@/components/Features/ConditionInput";
-import PrerequisiteTargetingField from "@/components/Features/PrerequisiteTargetingField";
+import TargetingFieldsGroup from "@/components/Features/TargetingFieldsGroup";
+import { type RuleCyclicResult } from "@/components/Features/PrerequisiteInput";
 import NamespaceSelector from "@/components/Features/NamespaceSelector";
 import FeatureVariationsInput from "@/components/Features/FeatureVariationsInput";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import ExperimentMetricsSelector from "@/components/Experiment/ExperimentMetricsSelector";
-import BanditSettings from "@/components/GeneralSettings/BanditSettings";
+import BanditDecisionMetricSettings from "@/components/Experiment/BanditDecisionMetricSettings";
 import StatsEngineSelect from "@/components/Settings/forms/StatsEngineSelect";
 import CustomMetricSlicesSelector from "@/components/Experiment/CustomMetricSlicesSelector";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
@@ -36,6 +36,19 @@ import { GBCuped } from "@/components/Icons";
 import { useUser } from "@/services/UserContext";
 import { SortableVariation } from "@/components/Features/SortableFeatureVariationRow";
 import Tooltip from "@/components/Tooltip/Tooltip";
+import {
+  AttributeOptionWithTooltip,
+  type AttributeOptionForTooltip,
+} from "@/components/Features/AttributeOptionTooltip";
+import Switch from "@/ui/Switch";
+import BanditSettings from "@/components/GeneralSettings/BanditSettings";
+import RuleEnvironmentScopeField, {
+  type EnvScopeProps,
+} from "@/components/Features/RuleModal/EnvironmentScopeField";
+import RuleProjectScopeField, {
+  type ProjectScopeProps,
+} from "@/components/Features/RuleModal/ProjectScopeField";
+import Callout from "@/ui/Callout";
 
 export default function BanditRefNewFields({
   step,
@@ -43,8 +56,6 @@ export default function BanditRefNewFields({
   feature,
   project,
   environments,
-  revisions,
-  version,
   prerequisiteValue,
   setPrerequisiteValue,
   setPrerequisiteTargetingSdkIssues,
@@ -62,14 +73,17 @@ export default function BanditRefNewFields({
   setWeight,
   variations,
   setVariations,
+  disableBanditConversionWindow,
+  setDisableBanditConversionWindow,
+  envScope,
+  projectScope,
+  onRuleCyclicChange,
 }: {
   step: number;
   source: "rule" | "experiment";
   feature?: FeatureInterface;
   project?: string;
   environments: string[];
-  revisions?: FeatureRevisionInterface[];
-  version?: number;
   prerequisiteValue: FeaturePrerequisite[];
   setPrerequisiteValue: (prerequisites: FeaturePrerequisite[]) => void;
   setPrerequisiteTargetingSdkIssues: (b: boolean) => void;
@@ -86,6 +100,11 @@ export default function BanditRefNewFields({
   setWeight: (i: number, w: number) => void;
   variations: SortableVariation[];
   setVariations: (v: SortableVariation[]) => void;
+  disableBanditConversionWindow: boolean;
+  setDisableBanditConversionWindow: (v: boolean) => void;
+  envScope?: EnvScopeProps;
+  projectScope?: ProjectScopeProps;
+  onRuleCyclicChange?: (result: RuleCyclicResult) => void;
 }) {
   const form = useFormContext();
 
@@ -94,20 +113,22 @@ export default function BanditRefNewFields({
     "regression-adjustment",
   );
 
-  const { datasources, getDatasourceById } = useDefinitions();
+  const { datasources, getDatasourceById, getExperimentMetricById } =
+    useDefinitions();
 
   const datasource = form.watch("datasource")
     ? getDatasourceById(form.watch("datasource") ?? "")
     : null;
 
   const exposureQueries = datasource?.settings?.queries?.exposure;
-  const exposureQueryId = form.getValues("exposureQueryId");
+  const exposureQueryId = form.watch("exposureQueryId");
 
   useEffect(() => {
-    if (!exposureQueries?.find((q) => q.id === exposureQueryId)) {
-      form.setValue("exposureQueryId", exposureQueries?.[0]?.id ?? "");
+    if (!exposureQueries?.length) return;
+    if (!exposureQueries.find((q) => q.id === exposureQueryId)) {
+      form.setValue("exposureQueryId", exposureQueries[0]?.id ?? "");
     }
-  }, [form, exposureQueries, exposureQueryId]);
+  }, [exposureQueries, exposureQueryId, form]);
 
   const attributeSchema = useAttributeSchema(false, project);
   const hasHashAttributes =
@@ -127,6 +148,7 @@ export default function BanditRefNewFields({
       {step === 0 ? (
         <>
           <Field
+            size="legacy"
             required={true}
             minLength={2}
             label="Bandit Name"
@@ -134,6 +156,7 @@ export default function BanditRefNewFields({
           />
 
           <Field
+            size="legacy"
             label="Tracking Key"
             {...form.register(`trackingKey`)}
             placeholder={feature?.id || ""}
@@ -141,31 +164,58 @@ export default function BanditRefNewFields({
           />
 
           <Field
+            size="legacy"
             label="Description"
             textarea
             minRows={1}
+            maxLength={MAX_DESCRIPTION_LENGTH}
             {...form.register("description")}
             placeholder="Short human-readable description of the Bandit"
           />
+
+          {envScope && <RuleEnvironmentScopeField {...envScope} my="5" />}
+          {projectScope && <RuleProjectScopeField {...projectScope} mb="5" />}
         </>
       ) : null}
 
       {step === 1 ? (
         <>
           <div className="mb-4">
+            <Text as="label" weight="semibold" mb="1">
+              Assign Variation by Attribute
+            </Text>
+            <Text as="div" color="text-mid" mb="2">
+              Will be hashed together with the Tracking Key to determine which
+              variation to assign
+            </Text>
             <SelectField
-              label="Assign Variation by Attribute"
+              size="legacy"
+              withRadixThemedPortal
               containerClassName="flex-1"
               options={attributeSchema
                 .filter((s) => !hasHashAttributes || s.hashAttribute)
-                .map((s) => ({ label: s.property, value: s.property }))}
+                .map((s) => ({
+                  label: s.property,
+                  value: s.property,
+                  description: s.description,
+                  tags: s.tags,
+                  datatype: s.datatype,
+                  hashAttribute: s.hashAttribute,
+                }))}
               value={form.watch("hashAttribute")}
               onChange={(v) => {
                 form.setValue("hashAttribute", v);
               }}
-              helpText={
-                "Will be hashed together with the Tracking Key to determine which variation to assign"
-              }
+              formatOptionLabel={(o, meta) => {
+                return (
+                  <AttributeOptionWithTooltip
+                    option={o as AttributeOptionForTooltip}
+                    context={meta.context}
+                  >
+                    {o.label}
+                  </AttributeOptionWithTooltip>
+                );
+              }}
             />
             <FallbackAttributeSelector
               form={form}
@@ -183,6 +233,7 @@ export default function BanditRefNewFields({
 
           <FeatureVariationsInput
             simple={true}
+            hideCoverage={false}
             label="Traffic Percent & Variations"
             defaultValue={feature ? getFeatureDefaultValue(feature) : undefined}
             valueType={feature?.valueType ?? "string"}
@@ -203,6 +254,8 @@ export default function BanditRefNewFields({
                 formPrefix={namespaceFormPrefix}
                 trackingKey={form.watch("trackingKey") || feature?.id}
                 featureId={feature?.id || ""}
+                experimentHashAttribute={form.watch("hashAttribute")}
+                fallbackAttribute={form.watch("fallbackAttribute")}
               />
             </div>
           )}
@@ -211,46 +264,27 @@ export default function BanditRefNewFields({
 
       {step === 2 ? (
         <>
-          <SavedGroupTargetingField
-            value={savedGroupValue}
-            setValue={setSavedGroupValue}
-            // value={form.watch("savedGroups") || []}
-            // setValue={(savedGroups) =>
-            //   form.setValue("savedGroups", savedGroups)
-            // }
+          <TargetingFieldsGroup
             project={project || ""}
-          />
-          <hr />
-          <ConditionInput
-            defaultValue={defaultConditionValue}
-            onChange={setConditionValue}
-            // defaultValue={form.watch("condition") || ""}
-            // onChange={(value) => form.setValue("condition", value)}
-            key={conditionKey}
-            project={project || ""}
-          />
-          <hr />
-          <PrerequisiteTargetingField
-            value={prerequisiteValue}
-            setValue={setPrerequisiteValue}
-            // value={form.watch("prerequisites") || []}
-            // setValue={(prerequisites) =>
-            //   form.setValue("prerequisites", prerequisites)
-            // }
-            feature={feature}
-            revisions={revisions}
-            version={version}
             environments={environments ?? []}
+            feature={feature}
+            savedGroups={savedGroupValue}
+            setSavedGroups={setSavedGroupValue}
+            condition={defaultConditionValue}
+            setCondition={setConditionValue}
+            conditionKey={conditionKey}
+            prerequisites={prerequisiteValue}
+            setPrerequisites={setPrerequisiteValue}
             setPrerequisiteTargetingSdkIssues={
               setPrerequisiteTargetingSdkIssues
             }
+            onRuleCyclicChange={onRuleCyclicChange}
           />
           {isCyclic ? (
-            <div className="alert alert-danger">
-              <FaExclamationTriangle /> A prerequisite (
-              <code>{cyclicFeatureId}</code>) creates a circular dependency.
-              Remove this prerequisite to continue.
-            </div>
+            <Callout status="error" mt="3">
+              A prerequisite (<code>{cyclicFeatureId}</code>) creates a circular
+              dependency. Remove this prerequisite to continue.
+            </Callout>
           ) : null}
         </>
       ) : null}
@@ -259,12 +293,28 @@ export default function BanditRefNewFields({
         <>
           <div className="rounded px-3 pt-3 pb-1 bg-highlight mb-4">
             <SelectField
+              size="legacy"
               label="Data Source"
               labelClassName="font-weight-bold"
               value={form.watch("datasource") ?? ""}
-              onChange={(newDatasource) =>
-                form.setValue("datasource", newDatasource)
-              }
+              onChange={(newDatasource) => {
+                form.setValue("datasource", newDatasource);
+                if (!newDatasource) {
+                  form.setValue("goalMetrics", []);
+                  return;
+                }
+                const isValidMetric = (id: string) =>
+                  getExperimentMetricById(id)?.datasource === newDatasource;
+                const goalMetrics = (form.watch("goalMetrics") ?? []).filter(
+                  isValidMetric,
+                );
+                if (
+                  goalMetrics.length !==
+                  (form.watch("goalMetrics") ?? []).length
+                ) {
+                  form.setValue("goalMetrics", goalMetrics);
+                }
+              }}
               options={datasources.map((d) => {
                 const isDefaultDataSource = d.id === settings.defaultDataSource;
                 return {
@@ -279,6 +329,7 @@ export default function BanditRefNewFields({
 
             {datasource?.properties?.exposureQueries && exposureQueries ? (
               <SelectField
+                size="legacy"
                 label={
                   <>
                     Experiment Assignment Table{" "}
@@ -289,14 +340,14 @@ export default function BanditRefNewFields({
                 value={form.watch("exposureQueryId") ?? ""}
                 onChange={(v) => form.setValue("exposureQueryId", v)}
                 required
-                options={exposureQueries?.map((q) => {
+                options={exposureQueries.map((q) => {
                   return {
                     label: q.name,
                     value: q.id,
                   };
                 })}
                 formatOptionLabel={({ label, value }) => {
-                  const userIdType = exposureQueries?.find(
+                  const userIdType = exposureQueries.find(
                     (e) => e.id === value,
                   )?.userIdType;
                   return (
@@ -317,25 +368,33 @@ export default function BanditRefNewFields({
             ) : null}
           </div>
 
-          <ExperimentMetricsSelector
-            datasource={datasource?.id}
-            exposureQueryId={exposureQueryId}
+          <Box my="4">
+            <BanditSettings page="experiment-settings" />
+          </Box>
+
+          {settings?.useStickyBucketing && (
+            <Switch
+              label="Disable Sticky Bucketing"
+              description="Permit users in low-performing variations to switch variations in future update periods."
+              value={!!form.watch("disableStickyBucketing")}
+              onChange={(v) => {
+                form.setValue("disableStickyBucketing", v);
+              }}
+              mb="5"
+              mt="5"
+            />
+          )}
+
+          <Separator my="5" size="4" />
+
+          <BanditDecisionMetricSettings
+            disableBanditConversionWindow={disableBanditConversionWindow}
+            setDisableBanditConversionWindow={setDisableBanditConversionWindow}
             project={project}
-            forceSingleGoalMetric={true}
-            noQuantileGoalMetrics={true}
-            goalMetrics={form.watch("goalMetrics") ?? []}
-            secondaryMetrics={form.watch("secondaryMetrics") ?? []}
-            guardrailMetrics={form.watch("guardrailMetrics") ?? []}
-            setGoalMetrics={(goalMetrics) =>
-              form.setValue("goalMetrics", goalMetrics)
-            }
           />
 
-          <div className="mt-2 mb-3">
-            <BanditSettings page="experiment-settings" />
-          </div>
-
           <ExperimentMetricsSelector
+            experimentType="multi-armed-bandit"
             datasource={datasource?.id}
             exposureQueryId={exposureQueryId}
             project={project}
@@ -359,10 +418,6 @@ export default function BanditRefNewFields({
             customMetricSlices={form.watch("customMetricSlices") ?? []}
             setCustomMetricSlices={(slices) =>
               form.setValue("customMetricSlices", slices)
-            }
-            pinnedMetricSlices={form.watch("pinnedMetricSlices") ?? []}
-            setPinnedMetricSlices={(slices) =>
-              form.setValue("pinnedMetricSlices", slices)
             }
           />
 
@@ -395,6 +450,7 @@ export default function BanditRefNewFields({
               />
 
               <SelectField
+                size="legacy"
                 className="mb-4"
                 label={
                   <PremiumTooltip commercialFeature="regression-adjustment">

@@ -1,6 +1,6 @@
-import { PutVisualChangeResponse } from "shared/types/openapi";
 import { putVisualChangeValidator } from "shared/validators";
 import { createApiRequestHandler } from "back-end/src/util/handler";
+import { requireDraftExperiment } from "back-end/src/api/visual-editor-ai/requireDraftExperiment";
 import {
   findExperimentByVisualChangesetId,
   updateVisualChange,
@@ -8,7 +8,7 @@ import {
 
 export const putVisualChange = createApiRequestHandler(
   putVisualChangeValidator,
-)(async (req): Promise<PutVisualChangeResponse> => {
+)(async (req) => {
   const changesetId = req.params.id;
   const visualChangeId = req.params.visualChangeId;
   const orgId = req.organization.id;
@@ -26,6 +26,7 @@ export const putVisualChange = createApiRequestHandler(
   if (!req.context.permissions.canUpdateVisualChange(experiment)) {
     req.context.permissions.throwPermissionError();
   }
+  requireDraftExperiment(req.context, experiment);
 
   const res = await updateVisualChange({
     changesetId,

@@ -1,11 +1,13 @@
 import React, { FC, useState } from "react";
 import { FaShippingFast } from "react-icons/fa";
+import { Flex } from "@radix-ui/themes";
 import clsx from "clsx";
-import Link from "next/link";
 import { date, datetime } from "shared/dates";
 import {
-  ExperimentMetricInterface,
+  ExperimentMetricDefinition,
+  getLatestPhaseVariations,
   getMetricResultStatus,
+  isSuspiciousUplift,
 } from "shared/experiments";
 import { DifferenceType, StatsEngine } from "shared/types/stats";
 import {
@@ -19,10 +21,12 @@ import {
   ExperimentStatus,
   Variation,
 } from "shared/types/experiment";
+import Link from "@/ui/Link";
 import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
 import useConfidenceLevels from "@/hooks/useConfidenceLevels";
 import usePValueThreshold from "@/hooks/usePValueThreshold";
-import { experimentDate } from "@/services/experiments";
+import useSignificanceThresholdsByProject from "@/hooks/useSignificanceThresholdsByProject";
+import { experimentDate, RowResults } from "@/services/experiments";
 import { useAddComputedFields, useSearch } from "@/services/search";
 import Tooltip from "@/components/Tooltip/Tooltip";
 import { formatNumber } from "@/services/metrics";
@@ -30,10 +34,11 @@ import ExperimentStatusIndicator from "@/components/Experiment/TabbedPage/Experi
 import ChangeColumn from "@/components/Experiment/ChangeColumn";
 import Pagination from "@/components/Pagination";
 import Checkbox from "@/ui/Checkbox";
+import VariationLabel from "@/ui/VariationLabel";
 
 interface Props {
   experimentsWithSnapshot: ExperimentWithSnapshot[];
-  metrics: ExperimentMetricInterface[];
+  metrics: ExperimentMetricDefinition[];
   bandits?: boolean;
   numPerPage?: number;
   differenceType?: DifferenceType;
@@ -63,6 +68,9 @@ export interface MetricExperimentData {
     lift?: number;
     resultsStatus?: string;
     directionalStatus?: "winning" | "losing";
+    suspiciousChange: boolean;
+    suspiciousThreshold: number;
+    minPercentChange: number;
   }[];
   users?: number;
   shipped?: boolean;
@@ -72,6 +80,7 @@ export interface MetricExperimentData {
   secondaryMetrics: string[];
   datasource: string;
   decisionFrameworkSettings: ExperimentDecisionFrameworkSettings;
+  project?: string;
 }
 
 // Interface for computed data with dynamic lift fields
@@ -99,11 +108,25 @@ const ExperimentWithMetricsTable: FC<Props> = ({
   const end = start + numPerPage;
 
   const { metricDefaults } = useOrganizationMetricDefaults();
-  const { ciUpper, ciLower } = useConfidenceLevels();
-  const pValueThreshold = usePValueThreshold();
+  const bayesianConfidenceLevels = useConfidenceLevels(undefined);
+  const pValueThreshold = usePValueThreshold(undefined);
+  const defaultSignificanceThresholds = {
+    bayesianConfidenceLevels,
+    pValueThreshold,
+  };
+  // Experiments in this table can span projects. Resolve project-scoped
+  // significance thresholds up front for every project in the org so we can
+  // look them up per-experiment without calling hooks in a loop.
+  const significanceThresholdsByProject = useSignificanceThresholdsByProject();
 
   const expData: MetricExperimentData[] = [];
   experimentsWithSnapshot.forEach((e) => {
+    const {
+      bayesianConfidenceLevels: { ciUpper, ciLower },
+      pValueThreshold,
+    } =
+      significanceThresholdsByProject.get(e.project || "") ??
+      defaultSignificanceThresholds;
     let variationResults: SnapshotMetric[][] = [];
     let statsEngine: StatsEngine = "bayesian";
     let differenceType: DifferenceType = "relative";
@@ -118,7 +141,7 @@ const ExperimentWithMetricsTable: FC<Props> = ({
       }
     }
     const baseline = variationResults?.[0];
-    e.variations.forEach((v, variationIndex) => {
+    getLatestPhaseVariations(e).forEach((v, variationIndex) => {
       if (variationIndex === 0) return;
       const expVariationData: MetricExperimentData = {
         id: e.id,
@@ -127,7 +150,7 @@ const ExperimentWithMetricsTable: FC<Props> = ({
         status: e.status,
         results: e.results,
         archived: e.archived,
-        variations: e.variations,
+        variations: getLatestPhaseVariations(e),
         statsEngine: statsEngine,
         variationIndex: variationIndex,
         variationName: v.name,
@@ -139,6 +162,7 @@ const ExperimentWithMetricsTable: FC<Props> = ({
         datasource: e.datasource,
         decisionFrameworkSettings: e.decisionFrameworkSettings,
         users: undefined,
+        project: e.project,
       };
       metrics.forEach((m, metricIndex) => {
         if (
@@ -158,6 +182,17 @@ const ExperimentWithMetricsTable: FC<Props> = ({
               statsEngine,
               differenceType,
             });
+          const suspiciousChange = isSuspiciousUplift(
+            baseline[metricIndex],
+            variationResults[variationIndex][metricIndex],
+            m,
+            metricDefaults,
+            differenceType,
+          );
+          const suspiciousThreshold =
+            m.maxPercentChange ?? metricDefaults?.maxPercentageChange ?? 0;
+          const minPercentChange =
+            m.minPercentChange ?? metricDefaults.minPercentageChange ?? 0;
           expVariationData.metricResults.push({
             results: variationResults[variationIndex][metricIndex],
             significant,
@@ -166,6 +201,9 @@ const ExperimentWithMetricsTable: FC<Props> = ({
               undefined,
             resultsStatus,
             directionalStatus,
+            suspiciousChange,
+            suspiciousThreshold,
+            minPercentChange,
           });
           expVariationData.users = Math.max(
             expVariationData.users ?? 0,
@@ -207,6 +245,11 @@ const ExperimentWithMetricsTable: FC<Props> = ({
     defaultSortDir: -1,
     undefinedLast: true,
     searchFields: [],
+    // This is a sort-only table embedded inside pages that own the URL `q`
+    // param (e.g. MetricCorrelations). Without this, the hook would latch
+    // onto the page's filter string at mount, which combined with an empty
+    // searchFields collapses the table to zero rows.
+    disableUrlSearchTerm: true,
   });
 
   const expRows = items.slice(start, end).map((e) => {
@@ -249,27 +292,24 @@ const ExperimentWithMetricsTable: FC<Props> = ({
         </td>
 
         <td>
-          <div
+          <Flex
             key={`var-experiment${e.id}-variation${e.variationIndex}`}
-            className={`variation variation${e.variationIndex} with-variation-label d-flex my-1`}
+            align="center"
+            gap="1"
+            my="1"
           >
-            <span className="label" style={{ width: 20, height: 20 }}>
-              {e.variationIndex}
-            </span>
-            <span
-              className="d-inline-block text-ellipsis hover"
-              style={{
-                maxWidth: 200,
-              }}
-            >
-              {e.variationName}
-              {e.shipped ? (
-                <Tooltip body={"Variation marked as the winner"}>
-                  <FaShippingFast className="ml-1" />{" "}
-                </Tooltip>
-              ) : null}
-            </span>
-          </div>
+            <VariationLabel
+              number={e.variationIndex}
+              name={e.variationName}
+              size="md"
+              maxWidth="220px"
+            />
+            {e.shipped ? (
+              <Tooltip body={"Variation marked as the winner"}>
+                <FaShippingFast />
+              </Tooltip>
+            ) : null}
+          </Flex>
         </td>
         <td className="nowrap" title={datetime(e.date)}>
           {e.status === "running"
@@ -298,11 +338,24 @@ const ExperimentWithMetricsTable: FC<Props> = ({
               return (
                 <ChangeColumn
                   metric={m}
+                  pValueThreshold={
+                    (
+                      significanceThresholdsByProject.get(e.project || "") ??
+                      defaultSignificanceThresholds
+                    ).pValueThreshold
+                  }
                   stats={mr.results}
                   rowResults={{
                     enoughData: true,
                     directionalStatus: mr.directionalStatus ?? "losing",
                     hasScaledImpact: true,
+                    significant: mr.significant,
+                    resultsStatus:
+                      (mr.resultsStatus as RowResults["resultsStatus"]) ?? "",
+                    suspiciousChange: mr.suspiciousChange,
+                    suspiciousThreshold: mr.suspiciousThreshold,
+                    minPercentChange: mr.minPercentChange,
+                    currentMetricTotal: mr.results?.value ?? 0,
                   }}
                   showPlusMinus={false}
                   statsEngine={e.statsEngine}

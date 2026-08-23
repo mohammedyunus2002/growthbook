@@ -1,5 +1,5 @@
 import { ExperimentMetricInterface } from "shared/experiments";
-import { FormatDialect, TemplateVariables } from "shared/types/sql";
+import { TemplateVariables } from "shared/types/sql";
 import {
   AlterNewIncrementalUnitsQueryParams,
   AutoMetricTrackedEvent,
@@ -8,12 +8,18 @@ import {
   CreateExperimentIncrementalUnitsQueryParams,
   CreateMetricSourceCovariateTableQueryParams,
   CreateMetricSourceTableQueryParams,
+  CreateAggregatedFactTableQueryParams,
+  InsertAggregatedFactTableDataQueryParams,
+  AggregatedFactTableMaxTimestampQueryParams,
+  DropAggregatedFactTableQueryParams,
   DimensionSlicesQueryParams,
   DimensionSlicesQueryResponse,
   DropMetricSourceCovariateTableQueryParams,
   DropOldIncrementalUnitsQueryParams,
   DropTableQueryParams,
   DropTableQueryResponse,
+  ContextualBanditSrmQueryParams,
+  ContextualBanditSrmQueryResponse,
   ExperimentAggregateUnitsQueryParams,
   ExperimentAggregateUnitsQueryResponse,
   ExperimentFactMetricsQueryParams,
@@ -32,6 +38,7 @@ import {
   IncrementalWithNoOutputQueryResponse,
   InformationSchema,
   InsertMetricSourceCovariateDataQueryParams,
+  InsertMetricSourceCovariateFromAggregatedFactTableQueryParams,
   InsertMetricSourceDataQueryParams,
   MaxTimestampIncrementalUnitsQueryParams,
   MaxTimestampMetricSourceQueryParams,
@@ -54,10 +61,16 @@ import {
 import {
   AutoFactTableSchemas,
   DataSourceInterface,
+  DataSourceType,
   DataSourceProperties,
   SchemaFormat,
 } from "shared/types/datasource";
-import { AdditionalQueryMetadata } from "shared/types/query";
+import type { DataSourceParamsForType } from "shared/util";
+import {
+  AdditionalQueryMetadata,
+  QueryType,
+  RunQueryMetadata,
+} from "shared/types/query";
 import { ExperimentSnapshotSettings } from "shared/types/experiment-snapshot";
 import { DimensionInterface } from "shared/types/dimension";
 import { FactMetricInterface } from "shared/types/fact-table";
@@ -66,47 +79,27 @@ import { ReqContext } from "back-end/types/request";
 
 export type { MetricAnalysisParams };
 
-export class MissingDatasourceParamsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "MissingDatasourceParamsError";
-  }
-}
+type DataSourceByType = {
+  [DataSource in DataSourceInterface as DataSource["type"]]: DataSource;
+};
 
-export class DataSourceNotSupportedError extends Error {
-  constructor() {
-    super("This data source is not supported yet.");
-    this.name = "DataSourceNotSupportedError";
-  }
-}
-
-export class SQLExecutionError extends Error {
-  query: string;
-  constructor(message: string, query: string) {
-    super(message);
-    this.name = "SQLExecutionError";
-    this.query = query;
-  }
-}
-
-export interface SourceIntegrationInterface {
-  datasource: DataSourceInterface;
+export interface SourceIntegrationInterface<
+  T extends DataSourceType = DataSourceType,
+> {
+  datasource: DataSourceByType[T] & { type: T };
   context: ReqContext;
   additionalQueryMetadata?: AdditionalQueryMetadata;
   decryptionError: boolean;
-  // eslint-disable-next-line
-  params: any;
+  params: DataSourceParamsForType<T>;
   setAdditionalQueryMetadata?(
     additionalQueryMetadata: AdditionalQueryMetadata,
   ): void;
-  getSensitiveParamKeys(): string[];
   getExperimentResultsQuery(
     snapshotSettings: ExperimentSnapshotSettings,
     metricDocs: ExperimentMetricInterface[],
     activationMetricDoc: ExperimentMetricInterface | null,
     dimension: DimensionInterface | null,
   ): string;
-  getFormatDialect?(): FormatDialect;
   getExperimentResults(
     snapshotSettings: ExperimentSnapshotSettings,
     metrics: ExperimentMetricInterface[],
@@ -121,16 +114,19 @@ export interface SourceIntegrationInterface {
     tableName: string,
   ): Promise<{ tableData: null | unknown[] }>;
   getInformationSchema?(): Promise<InformationSchema[]>;
+  supportsLimitZeroColumnValidation?(): boolean;
   getTestValidityQuery?(
     query: string,
     testDays?: number,
     templateVariables?: TemplateVariables,
+    timestampColumn?: string,
   ): string;
   getTestQuery?(params: TestQueryParams): string;
   getFreeFormQuery?(query: string, limit?: number): string;
   runTestQuery?(
     sql: string,
-    timestampCols?: string[],
+    timestampCols: string[] | undefined,
+    queryType: QueryType,
   ): Promise<TestQueryResult>;
   getMetricAnalysisQuery(
     metric: FactMetricInterface,
@@ -139,11 +135,13 @@ export interface SourceIntegrationInterface {
   runMetricAnalysisQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<MetricAnalysisQueryResponse>;
   getDropUnitsTableQuery(params: DropTableQueryParams): string;
   runDropTableQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<DropTableQueryResponse>;
   getMetricValueQuery(params: MetricValueParams): string;
   getPopulationMetricQuery?(params: PopulationMetricQueryParams): string;
@@ -153,10 +151,11 @@ export interface SourceIntegrationInterface {
   getExperimentFactMetricsQuery?(
     params: ExperimentFactMetricsQueryParams,
   ): string;
-  getExperimentMetricQuery(params: ExperimentMetricQueryParams): string;
+  getSnapshotMetricQuery(params: ExperimentMetricQueryParams): string;
   getExperimentAggregateUnitsQuery(
     params: ExperimentAggregateUnitsQueryParams,
   ): string;
+  getContextualBanditSrmQuery?(params: ContextualBanditSrmQueryParams): string;
   getExperimentUnitsTableQuery(params: ExperimentUnitsQueryParams): string;
   getCreateExperimentIncrementalUnitsQuery(
     params: CreateExperimentIncrementalUnitsQueryParams,
@@ -185,11 +184,26 @@ export interface SourceIntegrationInterface {
   getDropMetricSourceCovariateTableQuery(
     params: DropMetricSourceCovariateTableQueryParams,
   ): string;
+  getCreateAggregatedFactTableQuery(
+    params: CreateAggregatedFactTableQueryParams,
+  ): string;
+  getInsertAggregatedFactTableDataQuery(
+    params: InsertAggregatedFactTableDataQueryParams,
+  ): string;
+  getAggregatedFactTableMaxTimestampQuery(
+    params: AggregatedFactTableMaxTimestampQueryParams,
+  ): string;
+  getDropAggregatedFactTableQuery(
+    params: DropAggregatedFactTableQueryParams,
+  ): string;
   getCreateMetricSourceCovariateTableQuery(
     params: CreateMetricSourceCovariateTableQueryParams,
   ): string;
   getInsertMetricSourceCovariateDataQuery(
     params: InsertMetricSourceCovariateDataQueryParams,
+  ): string;
+  getInsertMetricSourceCovariateFromAggregatedFactTableQuery(
+    params: InsertMetricSourceCovariateFromAggregatedFactTableQueryParams,
   ): string;
   getIncrementalRefreshStatisticsQuery(
     params: IncrementalRefreshStatisticsQueryParams,
@@ -197,14 +211,17 @@ export interface SourceIntegrationInterface {
   runIncrementalWithNoOutputQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<IncrementalWithNoOutputQueryResponse>;
   runMaxTimestampQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<MaxTimestampQueryResponse>;
   runIncrementalRefreshStatisticsQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentFactMetricsQueryResponse>;
   // Pipeline validation helpers
   getPipelineValidationInsertQuery?(params: { tableFullName: string }): string;
@@ -226,41 +243,55 @@ export interface SourceIntegrationInterface {
   runDimensionSlicesQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<DimensionSlicesQueryResponse>;
   runMetricValueQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<MetricValueQueryResponse>;
   runPopulationMetricQuery?(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentMetricQueryResponse>;
   runPopulationFactMetricsQuery?(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentFactMetricsQueryResponse>;
-  runExperimentMetricQuery(
+  runSnapshotMetricQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentMetricQueryResponse>;
   runExperimentFactMetricsQuery?(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentFactMetricsQueryResponse>;
   runExperimentAggregateUnitsQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentAggregateUnitsQueryResponse>;
+  runContextualBanditSrmQuery?(
+    query: string,
+    setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
+  ): Promise<ContextualBanditSrmQueryResponse>;
   runExperimentUnitsQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<ExperimentUnitsQueryResponse>;
   runPastExperimentQuery(
     query: string,
     setExternalId: ExternalIdCallback,
+    queryMetadata: RunQueryMetadata,
   ): Promise<PastExperimentQueryResponse>;
-  runColumnTopValuesQuery?(sql: string): Promise<ColumnTopValuesResponse>;
-  getColumnTopValuesQuery?: (params: ColumnTopValuesParams) => string;
+  runColumnsTopValuesQuery?(sql: string): Promise<ColumnTopValuesResponse>;
+  getColumnsTopValuesQuery?: (params: ColumnTopValuesParams) => string;
   getEventsTrackedByDatasource?: (
     schemaFormat: AutoFactTableSchemas,
     schema?: string,
@@ -281,7 +312,10 @@ export interface SourceIntegrationInterface {
     database?: string,
     requireSchema?: boolean,
   ): string;
-  cancelQuery?(externalId: string): Promise<void>;
+  cancelQuery?(
+    externalId: string,
+    metadata?: Record<string, string>,
+  ): Promise<void>;
   getFeatureUsage?(
     feature: string,
     lookback: FeatureUsageLookback,

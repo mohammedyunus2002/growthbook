@@ -5,9 +5,18 @@ import {
   expandMetricGroups,
   quantileMetricType,
   isFactMetric,
+  isFactFunnelMetric,
+  getUserIdTypes,
 } from "shared/experiments";
+import {
+  FactMetricType,
+  FactTableDefinitionMap,
+} from "shared/types/fact-table";
+import { ExperimentType } from "shared/validators";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import { getIsExperimentIncludedInIncrementalRefresh } from "@/services/experiments";
+import { getExposureQuery } from "@/services/datasources";
+import Callout from "@/ui/Callout";
 import MetricsSelector from "./MetricsSelector";
 
 export interface Props {
@@ -23,6 +32,7 @@ export interface Props {
   autoFocus?: boolean;
   forceSingleGoalMetric?: boolean;
   noQuantileGoalMetrics?: boolean;
+  goalMetricAllowedFactMetricTypes?: FactMetricType[];
   noLegacyMetrics?: boolean;
   disabled?: boolean;
   goalDisabled?: boolean;
@@ -32,6 +42,8 @@ export interface Props {
   filterConversionWindowMetrics?: boolean;
   excludeQuantiles?: boolean;
   experimentId?: string;
+  requireDatasource?: boolean;
+  experimentType: ExperimentType | undefined;
 }
 
 export default function ExperimentMetricsSelector({
@@ -47,6 +59,7 @@ export default function ExperimentMetricsSelector({
   autoFocus = false,
   forceSingleGoalMetric = false,
   noQuantileGoalMetrics = false,
+  goalMetricAllowedFactMetricTypes,
   noLegacyMetrics = false,
   disabled,
   goalDisabled,
@@ -56,9 +69,15 @@ export default function ExperimentMetricsSelector({
   filterConversionWindowMetrics,
   excludeQuantiles = false,
   experimentId,
+  requireDatasource = false,
+  experimentType,
 }: Props) {
-  const { getExperimentMetricById, getDatasourceById, metricGroups } =
-    useDefinitions();
+  const {
+    getExperimentMetricById,
+    getDatasourceById,
+    metricGroups,
+    factTables,
+  } = useDefinitions();
 
   const getMetricDisabledInfo = useMemo(
     () => (metricId: string, isGroup: boolean) => {
@@ -67,6 +86,7 @@ export default function ExperimentMetricsSelector({
         getIsExperimentIncludedInIncrementalRefresh(
           datasourceObj ?? undefined,
           experimentId,
+          experimentType,
         );
 
       if (!isExperimentIncludedInIncrementalRefresh) {
@@ -74,7 +94,6 @@ export default function ExperimentMetricsSelector({
       }
 
       if (isGroup) {
-        // Check if metric group contains cross fact-table ratio metrics
         const metricGroup = metricGroups.find((mg) => mg.id === metricId);
         if (!metricGroup) {
           return { disabled: false };
@@ -83,34 +102,22 @@ export default function ExperimentMetricsSelector({
           metricGroup.metrics,
           metricGroups,
         );
-        const hasInvalidMetrics = expandedIds.some((id) => {
+
+        // Event quantile metrics require KLL support for incremental refresh.
+        const hasUnsupportedEventQuantileMetrics = expandedIds.some((id) => {
           const metric = getExperimentMetricById(id);
           return (
             metric &&
-            "numerator" in metric &&
-            !!metric.denominator &&
-            metric.numerator.factTableId !== metric.denominator.factTableId
+            quantileMetricType(metric) === "event" &&
+            !datasourceObj?.properties?.hasQuantileSketch
           );
         });
 
-        if (hasInvalidMetrics) {
+        if (hasUnsupportedEventQuantileMetrics) {
           return {
             disabled: true,
             reason:
-              "We currently don't support cross fact-table metrics with Incremental Refresh",
-          };
-        }
-
-        // Check if metric group contains quantile metrics
-        const hasQuantileMetrics = expandedIds.some((id) => {
-          const metric = getExperimentMetricById(id);
-          return metric && quantileMetricType(metric);
-        });
-
-        if (hasQuantileMetrics) {
-          return {
-            disabled: true,
-            reason: "Not supported with Incremental Refresh while in beta",
+              "Event quantile metrics with Incremental Refresh require a data source that supports KLL quantile sketches.",
           };
         }
 
@@ -126,27 +133,31 @@ export default function ExperimentMetricsSelector({
             reason: "Only fact metrics are supported with Incremental Refresh",
           };
         }
+
+        const hasFunnelMetrics = expandedIds.some((id) => {
+          const metric = getExperimentMetricById(id);
+          return metric && isFactFunnelMetric(metric);
+        });
+
+        if (hasFunnelMetrics) {
+          return {
+            disabled: true,
+            reason: "Funnel metrics are not supported with Incremental Refresh",
+          };
+        }
       } else {
-        // Check if individual metric is a cross fact-table ratio metric
         const metric = getExperimentMetricById(metricId);
+
+        // Event quantile metrics require KLL support for incremental refresh.
         if (
           metric &&
-          "numerator" in metric &&
-          !!metric.denominator &&
-          metric.numerator.factTableId !== metric.denominator.factTableId
+          quantileMetricType(metric) === "event" &&
+          !datasourceObj?.properties?.hasQuantileSketch
         ) {
           return {
             disabled: true,
             reason:
-              "We currently don't support cross fact-table metrics with Incremental Refresh",
-          };
-        }
-
-        // Check if metric is a quantile metric
-        if (metric && quantileMetricType(metric)) {
-          return {
-            disabled: true,
-            reason: "Not supported with Incremental Refresh while in beta",
+              "Event quantile metrics with Incremental Refresh require a data source that supports KLL quantile sketches.",
           };
         }
 
@@ -157,6 +168,13 @@ export default function ExperimentMetricsSelector({
             reason: "Only fact metrics are supported with Incremental Refresh",
           };
         }
+
+        if (metric && isFactFunnelMetric(metric)) {
+          return {
+            disabled: true,
+            reason: "Funnel metrics are not supported with Incremental Refresh",
+          };
+        }
       }
 
       return { disabled: false };
@@ -164,6 +182,7 @@ export default function ExperimentMetricsSelector({
     [
       datasource,
       experimentId,
+      experimentType,
       getExperimentMetricById,
       getDatasourceById,
       metricGroups,
@@ -176,6 +195,53 @@ export default function ExperimentMetricsSelector({
   const [guardrailCollapsed, setGuardrailCollapsed] = useState<boolean>(
     !!collapseGuardrail && guardrailMetrics.length === 0,
   );
+
+  // Check for mismatch between randomization unit and goal metric identifier type for bandits
+  const hasIdentifierTypeMismatch = useMemo(() => {
+    if (
+      !forceSingleGoalMetric ||
+      !goalMetrics.length ||
+      !datasource ||
+      !exposureQueryId
+    ) {
+      return false;
+    }
+
+    const datasourceObj = getDatasourceById(datasource);
+    const exposureQuery = getExposureQuery(
+      datasourceObj?.settings,
+      exposureQueryId,
+    );
+    const randomizationUnitUserIdType = exposureQuery?.userIdType;
+
+    if (!randomizationUnitUserIdType) {
+      return false;
+    }
+
+    const goalMetricId = goalMetrics[0];
+    const goalMetric = getExperimentMetricById(goalMetricId);
+    if (!goalMetric) {
+      return false;
+    }
+
+    // Build factTableMap for getUserIdTypes
+    const factTableMap: FactTableDefinitionMap = new Map();
+    factTables.forEach((ft) => {
+      factTableMap.set(ft.id, ft);
+    });
+
+    const metricUserIdTypes = getUserIdTypes(goalMetric, factTableMap);
+    return !metricUserIdTypes.includes(randomizationUnitUserIdType);
+  }, [
+    forceSingleGoalMetric,
+    goalMetrics,
+    datasource,
+    exposureQueryId,
+    getDatasourceById,
+    getExperimentMetricById,
+    factTables,
+  ]);
+
   return (
     <>
       {setGoalMetrics !== undefined && (
@@ -206,11 +272,20 @@ export default function ExperimentMetricsSelector({
             forceSingleMetric={forceSingleGoalMetric}
             includeGroups={!forceSingleGoalMetric}
             excludeQuantiles={noQuantileGoalMetrics || excludeQuantiles}
+            allowedFactMetricTypes={goalMetricAllowedFactMetricTypes}
             filterConversionWindowMetrics={filterConversionWindowMetrics}
             noLegacyMetrics={noLegacyMetrics}
             disabled={disabled || goalDisabled}
+            requireDatasource={requireDatasource}
             getMetricDisabledInfo={getMetricDisabledInfo}
           />
+          {hasIdentifierTypeMismatch && (
+            <Callout status="warning" my="4">
+              Mismatch between the randomization unit and the Decision Metric
+              identifier type can lead to double counting if the randomization
+              unit has multiple exposures.
+            </Callout>
+          )}
         </div>
       )}
 

@@ -18,12 +18,13 @@ export default function ButtonStories() {
     <div>
       <div className="mb-2 w-200px">
         <SelectField
+          size="legacy"
           value={size}
           options={[
-            { label: "extra sm", value: "xs" },
             { label: "small", value: "sm" },
             { label: "medium", value: "md" },
             { label: "large", value: "lg" },
+            { label: "extra large", value: "xl" },
           ]}
           sort={false}
           onChange={(v: Size) => setSize(v)}
@@ -68,7 +69,7 @@ export default function ButtonStories() {
             mb="2"
             icon={<BsArrowRepeat />}
             onClick={async () =>
-              await new Promise((resolve, reject) =>
+              await new Promise<void>((resolve, reject) =>
                 setTimeout(() => {
                   if (Math.random() < 0.5) {
                     resolve();

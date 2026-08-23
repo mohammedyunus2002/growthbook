@@ -15,6 +15,7 @@ import {
   getExperimentById,
   updateExperiment,
 } from "back-end/src/models/ExperimentModel";
+import { validateExperimentChange } from "back-end/src/services/experimentChanges/changeExperimentStatus";
 import { auditDetailsUpdate } from "back-end/src/services/audit";
 
 export async function postExperimentLaunchChecklist(
@@ -26,7 +27,7 @@ export async function postExperimentLaunchChecklist(
   const { tasks, projectId } = req.body;
 
   if (!orgHasPremiumFeature(org, "custom-launch-checklist")) {
-    throw new Error(
+    context.throwPlanDoesNotAllowError(
       "Must have a commercial License Key to customize the organization's pre-launch checklist.",
     );
   }
@@ -160,7 +161,7 @@ export async function putExperimentLaunchChecklist(
   const { id } = req.params;
 
   if (!orgHasPremiumFeature(org, "custom-launch-checklist")) {
-    throw new Error(
+    context.throwPlanDoesNotAllowError(
       "Must have a commercial License Key to update a pre-launch checklist.",
     );
   }
@@ -219,6 +220,7 @@ export async function putManualLaunchChecklist(
     context.permissions.throwPermissionError();
   }
 
+  await validateExperimentChange({ context, experiment, changes });
   await updateExperiment({
     context,
     experiment,

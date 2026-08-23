@@ -3,8 +3,8 @@ import { RxDesktop } from "react-icons/rx";
 import { BsFlag } from "react-icons/bs";
 import { PiArrowSquareOutBold, PiShuffle } from "react-icons/pi";
 import { TbCloudOff } from "react-icons/tb";
-import React, { useState } from "react";
-import { isFactMetricId } from "shared/experiments";
+import React, { useMemo, useState } from "react";
+import { isFactMetricId, getAllVariations } from "shared/experiments";
 import { date } from "shared/dates";
 import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import CustomMarkdown from "@/components/Markdown/CustomMarkdown";
@@ -19,6 +19,8 @@ import Link from "@/ui/Link";
 import { experimentDate } from "@/services/experiments";
 import { VariationBox } from "@/components/Experiment/VariationsTable";
 import ExperimentCarouselModal from "@/components/Experiment/ExperimentCarouselModal";
+import CollapsibleDiscussion from "@/components/CollapsibleDiscussion";
+import useApi from "@/hooks/useApi";
 
 const maxImageHeight = 200;
 const maxImageWidth = 300;
@@ -42,8 +44,25 @@ const CompletedExperimentList = ({
   const start = (currentPage - 1) * NUM_PER_PAGE;
   const end = start + NUM_PER_PAGE;
 
-  const { getUserDisplay } = useUser();
+  const { getOwnerDisplay } = useUser();
   const { getMetricById, getFactMetricById } = useDefinitions();
+
+  // Batch-fetch comment counts for the current page of experiments so each
+  // card doesn't fire its own discussion fetch just to render a count.
+  const pageExperimentIdsKey = useMemo(
+    () =>
+      experiments
+        .slice(start, end)
+        .map((e) => e.id)
+        .sort()
+        .join(","),
+    [experiments, start, end],
+  );
+  const { data: commentCountsData } = useApi<{
+    counts: Record<string, number>;
+  }>(`/discussions/counts/experiment?ids=${pageExperimentIdsKey}`, {
+    shouldRun: () => pageExperimentIdsKey.length > 0,
+  });
 
   return (
     <>
@@ -75,18 +94,19 @@ const CompletedExperimentList = ({
             const winningVariationIndex =
               result === "lost" ? 0 : result === "won" ? (e.winner ?? 1) : null;
 
+            const variations = getAllVariations(e);
             const winningVariation =
               winningVariationIndex !== null
-                ? e.variations[winningVariationIndex]
+                ? variations[winningVariationIndex]
                 : null;
 
             const releasedVariationId = e.releasedVariationId || "";
-            const releasedVariationIndex = e.variations.findIndex(
+            const releasedVariationIndex = variations.findIndex(
               (v) => v.id === releasedVariationId,
             );
             const releasedVariation =
               releasedVariationIndex >= 0
-                ? e.variations[releasedVariationIndex]
+                ? variations[releasedVariationIndex]
                 : null;
 
             const variantImageToShow = winningVariation
@@ -184,6 +204,7 @@ const CompletedExperimentList = ({
             });
             const moreGoalMetrics = e.goalMetrics.length > 2;
 
+            const experimentProjects = e.project ? [e.project] : [];
             return (
               <Box key={e.trackingKey} className="appbox" mb="4" p="6" pt="5">
                 <Flex align="center" mb="4">
@@ -212,7 +233,7 @@ const CompletedExperimentList = ({
                   >
                     <VariationBox
                       i={variantImageToShow || 0}
-                      v={e.variations[variantImageToShow || 0]}
+                      v={variations[variantImageToShow || 0]}
                       experiment={e}
                       showDescription={false}
                       showIds={false}
@@ -264,7 +285,7 @@ const CompletedExperimentList = ({
                           <Box>
                             <Text weight="medium">Owner:</Text>
                           </Box>
-                          <Box>{getUserDisplay(e.owner, false) || ""}</Box>
+                          <Box>{getOwnerDisplay(e.owner) || "None"}</Box>
                         </Flex>
                         <Flex gap="2" align="center">
                           <Box>
@@ -327,6 +348,18 @@ const CompletedExperimentList = ({
                     </Flex>
                   </Box>
                 </Flex>
+                <Box
+                  pt="3"
+                  mt="3"
+                  style={{ borderTop: "1px solid var(--gray-a4)" }}
+                >
+                  <CollapsibleDiscussion
+                    type="experiment"
+                    id={e.id}
+                    projects={experimentProjects}
+                    commentCount={commentCountsData?.counts?.[e.id] ?? 0}
+                  />
+                </Box>
               </Box>
             );
           })

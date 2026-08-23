@@ -18,6 +18,7 @@ import ExperimentDateGraph, {
 } from "@/components/Experiment/ExperimentDateGraph";
 import SelectField from "@/components/Forms/SelectField";
 import Tooltip from "@/components/Tooltip/Tooltip";
+import VariationLabel from "@/ui/VariationLabel";
 import { transformDimensionData } from "./DimensionIssues";
 
 const numberFormatter = new Intl.NumberFormat();
@@ -127,6 +128,7 @@ export default function TrafficCard({
             <div className="col-auto">
               <div className="uppercase-title text-muted">Dimension</div>
               <SelectField
+                size="legacy"
                 containerClassName={"select-dropdown-underline"}
                 initialOption="Over Time"
                 options={availableDimensions}
@@ -164,21 +166,9 @@ export default function TrafficCard({
               <th className="border-top-0" style={{ paddingLeft: "32px" }}>
                 {dimensionWithIssues?.label}
               </th>
-              {variations.map((v, i) => (
-                <th
-                  className={`border-top-0 variation with-variation-label variation${i}`}
-                  key={i}
-                >
-                  <span
-                    className="label"
-                    style={{
-                      width: 20,
-                      height: 20,
-                    }}
-                  >
-                    {i}
-                  </span>
-                  {v.name}
+              {variations.map((v) => (
+                <th className="border-top-0" key={v.id}>
+                  <VariationLabel number={v.index} name={v.name} size="md" />
                 </th>
               ))}
               <th className="border-top-0">Expected %</th>
@@ -251,7 +241,7 @@ export default function TrafficCard({
         <div className="mt-2 mb-2">
           <ExperimentDateGraph
             yaxis="users"
-            variationNames={variations.map((v) => v.name)}
+            variations={variations}
             label="Units"
             datapoints={usersPerDate}
             formatter={formatNumber}

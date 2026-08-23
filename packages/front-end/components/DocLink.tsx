@@ -8,12 +8,23 @@ const docSections = {
   experimentConfiguration: "/app/experiment-configuration",
   experimentResults: "/app/experiment-results",
   experimentDecisionFramework: "/app/experiment-decisions",
+  experimentsOverview: "/experiments",
+  featureFlagExperiments: "/features/feature-flag-experiments",
+  experimentTimeSeries: "/app/experiment-time-series",
+  experimentTemplates: "/running-experiments/experiment-templates",
+  makingExperimentChanges: "/app/making-experiment-changes",
+  experimentDashboards: "/app/experiment-dashboards",
+  importingExperiments: "/app/importing-experiments",
+  clusterExperiments: "/experimentation-analysis/cluster-experiments",
+  preLaunchChecklist: "/app/pre-launch-checklist",
+  banditsConfig: "/bandits/config",
+  banditsResults: "/bandits/results",
   stickyBucketing: "/app/sticky-bucketing",
   metrics: "/app/metrics",
   factTables: "/app/metrics",
   dimensions: "/app/dimensions",
   datasources: "/app/datasources",
-  insights: "/app/insights",
+  insights: "/insights",
   powerCalculator: "/statistics/power",
   api: "/app/api",
   eventWebhooks: "/app/webhooks/event-webhooks",
@@ -22,12 +33,27 @@ const docSections = {
   "sdkWebhooks#payload-format": "/app/webhooks/sdk-webhooks#payload-format",
   webhookSecrets: "/app/webhooks#webhook-secrets",
   bandits: "/bandits/overview",
+  contextualBandits: "/contextual-bandits/overview",
   targeting: "/features/targeting",
   namespaces: "/features/rules#namespaces",
   environments: "/features/environments",
   archetypes: "/features/rules#archetype",
   team: "/account/user-permissions#teams",
   codeReferences: "/features/code-references",
+  featureBasics: "/features/basics",
+  featureRules: "/features/rules",
+  safeRollouts: "/features/safe-rollouts",
+  publishingAndApprovalFlows: "/features/publishing-and-approval-flows",
+  staleDetection: "/features/stale-detection",
+  featureDiagnostics: "/features/diagnostics",
+  customHooks: "/features/custom-hooks",
+  "customHooks#validatefeature": "/features/custom-hooks#validatefeature",
+  "customHooks#validatefeaturerevision":
+    "/features/custom-hooks#validatefeaturerevision",
+  "customHooks#validateconfig": "/features/custom-hooks#validateconfig",
+  "customHooks#validateconfigrevision":
+    "/features/custom-hooks#validateconfigrevision",
+  "customHooks#validateexperiment": "/features/custom-hooks#validateexperiment",
   customRoles: "/account/user-permissions#custom-roles",
   //DataSourceType
   athena: "/app/datasources#aws-athena",
@@ -36,6 +62,8 @@ const docSections = {
   presto: "/warehouses/prestodb-or-trino",
   snowflake: "/warehouses/snowflake",
   vertica: "/warehouses/vertica",
+  adobe_experience_platform_query_service:
+    "/warehouses/adobe-experience-platform-query-service",
   databricks: "/warehouses/databricks",
   clickhouse: "/warehouses/clickhouse",
   postgres: "/warehouses/postgres",
@@ -61,11 +89,13 @@ const docSections = {
   csharp: "/lib/csharp",
   elixir: "/lib/elixir",
   flutter: "/lib/flutter",
+  rust: "/lib/rust",
   nocode: "/lib/script-tag",
   cloudflare: "/lib/edge/cloudflare",
   fastly: "/lib/edge/fastly",
   lambda: "/lib/edge/lambda",
   edge: "/lib/edge/other",
+  roku: "/lib/roku",
   //Other
   user_guide: "/app",
   config: "/self-host/config",
@@ -85,7 +115,16 @@ const docSections = {
   webflow: "/integrations/webflow",
   wordpress: "/integrations/wordpress",
   prerequisites: "/features/prerequisites",
+  statisticsOverview: "/statistics/overview",
+  statisticsDetails: "/statistics/details",
+  statisticsQuantile: "/statistics/quantile",
+  statisticsCuped: "/statistics/cuped",
   statisticsSequential: "/statistics/sequential",
+  statisticsMultipleCorrections: "/statistics/multiple-corrections",
+  statisticsAggregation: "/statistics/aggregation",
+  statisticsPowerTechnical: "/statistics/power-technical",
+  statisticsCupedTechnical: "/statistics/cuped-technical",
+  statisticsPostStratification: "/statistics/post-stratification",
   customMarkdown: "/using/growthbook-best-practices#custom-markdown",
   customMetadata: "/using/growthbook-best-practices#custom-fields",
   savedGroups: "/features/targeting#saved-groups",
@@ -98,6 +137,9 @@ const docSections = {
   queryOptimization: "/app/query-optimization",
   metricGroups: "/app/metrics#metric-groups",
   managedWarehouseTracking: "/app/managed-warehouse#sending-events",
+  managedWarehouseIngestionApi: "/app/managed-warehouse#ingestion-api",
+  eventForwarder: "/app/event-forwarder",
+  chooseDataPath: "/app/choose-data-path",
   devTools: "/tools/chrome-extension",
   pipelineMode: "/app/data-pipeline",
   holdouts: "/app/holdouts",
@@ -106,6 +148,69 @@ const docSections = {
 };
 
 export type DocSection = keyof typeof docSections;
+
+/** Display-only titles for Cmd+K / search; keys stay aligned with `docSections`. */
+const docSectionDisplayTitles: Partial<Record<DocSection, string>> = {
+  growthbook_clickhouse: "Managed Warehouse",
+  buildYourOwn: "Build Your Own SDK",
+  ga4BigQuery: "GA4 BigQuery",
+  sdks: "SDKs",
+  javascript: "JavaScript SDK",
+  javascriptAutoAttributes: "JavaScript SDK (Auto Attributes)",
+  tsx: "React SDK",
+  nextjs: "Next.js SDK",
+  go: "Go SDK",
+  kotlin: "Kotlin SDK",
+  swift: "Swift SDK",
+  ruby: "Ruby SDK",
+  php: "PHP SDK",
+  python: "Python SDK",
+  java: "Java SDK",
+  csharp: "C# SDK",
+  elixir: "Elixir SDK",
+  flutter: "Flutter SDK",
+  rust: "Rust SDK",
+  nocode: "HTML Script Tag",
+  cloudflare: "Cloudflare SDK",
+  fastly: "Fastly SDK",
+  lambda: "AWS Lambda SDK",
+  edge: "Edge SDK (Other)",
+  roku: "Roku SDK",
+};
+
+const uppercaseAcronymTokens = new Set(["api", "gtm", "sdk", "url"]);
+
+/**
+ * Human-readable title for search (e.g. Cmd+K). Handles camelCase (including
+ * acronyms such as `SDK`), snake_case, and #anchors in keys (e.g.
+ * `sdkWebhooks#payload-format`).
+ */
+export function docTitleForSection(section: DocSection): string {
+  const titled = docSectionDisplayTitles[section];
+  if (titled !== undefined) return titled;
+
+  const raw = section as string;
+  const withSpaces = raw.replace(/#/g, " ").replace(/-/g, " ");
+  const splitCamel = withSpaces
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  return splitCamel
+    .replace(/_/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => {
+      const normalized = w.toLowerCase();
+      if (uppercaseAcronymTokens.has(normalized)) {
+        return normalized.toUpperCase();
+      }
+      // Preserve acronym tokens already split from camelCase (e.g. "SDK").
+      if (/^[A-Z0-9]+$/.test(w) && /[A-Z]/.test(w)) {
+        return w;
+      }
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
 
 const urlPathMapping: Record<string, DocSection> = {
   "/": "home",
@@ -184,11 +289,26 @@ export const docUrl = (docSection: DocSection, fallBackSection = "home") => {
   return docsOrigin + docsPath;
 };
 
+/** Stable rows for indexing documentation in the command palette. */
+export function getDocSectionsForCommandPalette(): {
+  section: DocSection;
+  title: string;
+  url: string;
+  tags: string;
+}[] {
+  return (Object.keys(docSections) as DocSection[]).map((section) => ({
+    section,
+    title: docTitleForSection(section),
+    url: docUrl(section),
+    tags: `${section} documentation`,
+  }));
+}
+
 export function DocLink({
   docSection,
   fallBackSection = "home",
   className = "",
-  useRadix,
+  useRadix = true,
   children,
 }: DocLinkProps) {
   if (useRadix) {

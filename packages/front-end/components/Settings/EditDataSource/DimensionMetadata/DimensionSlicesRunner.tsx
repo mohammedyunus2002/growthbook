@@ -6,17 +6,18 @@ import { useForm } from "react-hook-form";
 import { Box, Flex, Text } from "@radix-ui/themes";
 import { useGrowthBook } from "@growthbook/growthbook-react";
 import { QueryStatus } from "shared/types/query";
+import { AppFeatures } from "shared/types/app-features";
 import RunQueriesButton, {
   getQueryStatus,
 } from "@/components/Queries/RunQueriesButton";
 import ViewAsyncQueriesButton from "@/components/Queries/ViewAsyncQueriesButton";
 import Field from "@/components/Forms/Field";
-import MultiSelectField from "@/components/Forms/MultiSelectField";
+import MultiSelectField from "@/ui/MultiSelectField";
 import Tooltip from "@/components/Tooltip/Tooltip";
 import SelectField from "@/components/Forms/SelectField";
-import { AppFeatures } from "@/types/app-features";
 import Link from "@/ui/Link";
 import { useAuth } from "@/services/auth";
+import Callout from "@/ui/Callout";
 
 const smallPercentFormatter = new Intl.NumberFormat(undefined, {
   style: "percent",
@@ -100,6 +101,7 @@ export const DimensionSlicesRunner: FC<DimensionSlicesRunnerProps> = ({
     <div className="d-inline-flex align-items-center mt-1">
       <label className="mb-0 mr-2 small">Days to look back</label>
       <Field
+        size="legacy"
         type="number"
         style={{ width: 70 }}
         {...form.register("lookbackDays", {
@@ -127,7 +129,7 @@ export const DimensionSlicesRunner: FC<DimensionSlicesRunnerProps> = ({
   const ErrorBox = (
     <>
       {(status === "failed" || error !== "") && dimensionSlices ? (
-        <div className="alert alert-danger mt-2">
+        <Callout status="error" mt="2">
           <Flex direction="column" gap="1">
             <Box>
               <strong>Error updating data</strong>
@@ -136,10 +138,10 @@ export const DimensionSlicesRunner: FC<DimensionSlicesRunnerProps> = ({
             <Box>{lookbackField}</Box>
             <Box>{asyncQueriesButton}</Box>
           </Flex>
-        </div>
+        </Callout>
       ) : null}
       {status === "succeeded" && dimensionSlices?.results.length === 0 ? (
-        <div className="alert alert-warning mt-2">
+        <Callout status="warning" mt="2">
           <p className="mb-0">
             <strong>
               No experiment assignment rows found in data source.
@@ -151,7 +153,7 @@ export const DimensionSlicesRunner: FC<DimensionSlicesRunnerProps> = ({
           </p>
           {lookbackField}
           {asyncQueriesButton}
-        </div>
+        </Callout>
       ) : null}
     </>
   );
@@ -206,6 +208,7 @@ const RefreshData = ({
           </Flex>
         ) : null}
         <RunQueriesButton
+          radixVariant="soft"
           cta={`${dimensionSlices ? "Refresh" : "Query"} Traffic Data`}
           icon={dimensionSlices ? "refresh" : "run"}
           mutate={mutate}
@@ -319,12 +322,18 @@ export const DimensionSlicesResults: FC<{
             <th>% of Traffic</th>
             <th>
               Dimension Values{" "}
-              <Tooltip body="Dimension values are the levels of a dimension used for pre-computed dimension analysis (currently only used on the Experiment Health Tab). Values not in this list will be grouped into the '__Other__' bucket."></Tooltip>
+              <Tooltip
+                body="Dimension values are the levels of a dimension used for pre-computed dimension analysis (currently only used on the Experiment Health Tab). Values not in this list will be grouped into the '__Other__' bucket."
+                tipPosition="top"
+              />
             </th>
             {growthbook.isOn("pre-computed-dimensions") ? (
               <th>
                 Priority{" "}
-                <Tooltip body="Higher priority dimensions are used first when choosing which dimensions to pre-compute for fast slicing and dicing."></Tooltip>
+                <Tooltip
+                  body="Higher priority dimensions are used first when choosing which dimensions to pre-compute for fast slicing and dicing."
+                  tipPosition="top"
+                />
               </th>
             ) : null}
           </tr>
@@ -345,19 +354,13 @@ export const DimensionSlicesResults: FC<{
                         {dimensionValueResult.dimensionSlices.map((d, i) => {
                           totalPercent += d.percent;
                           return (
-                            <>
-                              <Fragment key={`${metadata.dimension}-${i}`}>
-                                {i ? ", " : ""}
-                                <code
-                                  key={`${metadata.dimension}-code-${d.name}`}
-                                >
-                                  {d.name}
-                                </code>
-                              </Fragment>
+                            <Fragment key={`${metadata.dimension}-${d.name}`}>
+                              {i ? ", " : ""}
+                              <code>{d.name}</code>
                               <span>{` (${smallPercentFormatter.format(
                                 d.percent / 100.0,
                               )})`}</span>
-                            </>
+                            </Fragment>
                           );
                         })}
                       </div>
@@ -394,6 +397,7 @@ export const DimensionSlicesResults: FC<{
                     {metadata?.customSlicesArray ? (
                       <>
                         <MultiSelectField
+                          legacyHeight
                           value={metadata?.customSlicesArray || []}
                           onChange={(values) =>
                             updateCustomSelectedSlices(
@@ -448,6 +452,7 @@ export const DimensionSlicesResults: FC<{
                 {growthbook.isOn("pre-computed-dimensions") ? (
                   <td>
                     <SelectField
+                      size="legacy"
                       value={metadata.priority?.toString() ?? "0"}
                       onChange={(value) =>
                         updatePriority(metadata.dimension, parseInt(value))

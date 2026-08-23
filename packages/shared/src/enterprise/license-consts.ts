@@ -12,11 +12,13 @@ export const accountPlans: Set<AccountPlan> = new Set([
 
 export type CommercialFeature =
   | "ai-suggestions"
+  | "ai-byok"
   | "scim"
   | "sso"
   | "advanced-permissions"
   | "encrypt-features-endpoint"
   | "schedule-feature-flag"
+  | "events-forwarder"
   | "custom-metadata"
   | "override-metrics"
   | "regression-adjustment"
@@ -36,6 +38,7 @@ export type CommercialFeature =
   | "custom-launch-checklist"
   | "multi-metric-queries"
   | "no-access-role"
+  | "project-admin-role"
   | "teams"
   | "sticky-bucketing"
   | "require-approvals"
@@ -47,6 +50,7 @@ export type CommercialFeature =
   | "custom-roles"
   | "quantile-metrics"
   | "retention-metrics"
+  | "funnel-metrics"
   | "custom-markdown"
   | "experiment-impact"
   | "metric-populations"
@@ -61,10 +65,12 @@ export type CommercialFeature =
   | "unlimited-managed-warehouse-usage"
   | "safe-rollout"
   | "require-project-for-features-setting"
+  | "require-project-for-sdk-connections-setting"
   | "holdouts"
   | "saveSqlExplorerQueries"
   | "metric-effects"
   | "metric-correlations"
+  | "learnings"
   | "dashboards"
   | "product-analytics-dashboards"
   | "share-product-analytics-dashboards"
@@ -72,9 +78,22 @@ export type CommercialFeature =
   | "custom-hooks"
   | "metric-slices"
   | "manage-official-resources"
-  | "incremental-refresh";
+  | "incremental-refresh"
+  | "adv-presentations"
+  | "ramp-schedules"
+  | "scheduled-revisions"
+  | "feature-configs"
+  | "releases"
+  | "contextual-bandits";
 
 export type CommercialFeaturesMap = Record<AccountPlan, Set<CommercialFeature>>;
+
+// Missing field/value = unlimited.
+export type OrgLimits = {
+  maxProjects?: number | null;
+  customEnvironments?: boolean;
+  roleManagement?: boolean;
+};
 
 export type SubscriptionInfo = {
   billingPlatform?: "stripe" | "orb";
@@ -156,6 +175,7 @@ export interface LicenseInterface {
   lastFailedFetchDate?: Date; // Date of the last failed fetch
   lastServerErrorMessage?: string; // The last error message from a failed fetch
   signedChecksum: string; // Checksum of the license data signed with the private key
+  limits?: OrgLimits; // NOT part of the signed checksum (see verifyLicenseInterface)
 }
 
 // Old/Airgapped style license keys where the license data is encrypted in the key itself
@@ -185,135 +205,100 @@ export type LicenseData = {
   eat?: string;
 };
 
+const commercialFeaturesPro: CommercialFeature[] = [
+  "advanced-permissions",
+  "encrypt-features-endpoint",
+  "schedule-feature-flag",
+  "events-forwarder",
+  "override-metrics",
+  "regression-adjustment",
+  "sequential-testing",
+  "visual-editor",
+  "archetypes",
+  "simulate",
+  "cloud-proxy",
+  "hash-secure-attributes",
+  "livechat",
+  "remote-evaluation",
+  "sticky-bucketing",
+  "code-references",
+  "prerequisites",
+  "redirects",
+  "multiple-sdk-webhooks",
+  "quantile-metrics",
+  "retention-metrics",
+  "funnel-metrics",
+  "metric-populations",
+  "multi-armed-bandits",
+  "historical-power",
+  "decision-framework",
+  "safe-rollout",
+  "ramp-schedules",
+  "unlimited-managed-warehouse-usage",
+  "saveSqlExplorerQueries",
+  "precomputed-dimensions",
+  "product-analytics-dashboards",
+];
+
+const commercialFeaturesProSso: CommercialFeature[] = [
+  ...commercialFeaturesPro,
+  "sso",
+];
+
+const commercialFeaturesEnterpriseOnly: CommercialFeature[] = [
+  "ai-suggestions",
+  "ai-byok",
+  "scim",
+  "audit-logging",
+  "custom-metadata",
+  "post-stratification",
+  "pipeline-mode",
+  "multi-metric-queries",
+  "json-validation",
+  "multi-org",
+  "teams",
+  "custom-launch-checklist",
+  "no-access-role",
+  "require-approvals",
+  "prerequisite-targeting",
+  "custom-roles",
+  "project-admin-role",
+  "custom-markdown",
+  "experiment-impact",
+  "large-saved-groups",
+  "metric-groups",
+  "environment-inheritance",
+  "templates",
+  "require-project-for-features-setting",
+  "require-project-for-sdk-connections-setting",
+  "holdouts",
+  "metric-effects",
+  "metric-correlations",
+  "learnings",
+  "dashboards",
+  "custom-hooks",
+  "metric-slices",
+  "manage-official-resources",
+  "share-product-analytics-dashboards",
+  "incremental-refresh",
+  "adv-presentations",
+  "contextual-bandits",
+  "scheduled-revisions",
+  "feature-configs",
+  "releases",
+];
+
+const commercialFeaturesEnterprise: CommercialFeature[] = [
+  ...commercialFeaturesProSso,
+  ...commercialFeaturesEnterpriseOnly,
+];
+
 export const accountFeatures: CommercialFeaturesMap = {
   oss: new Set<CommercialFeature>([]),
   starter: new Set<CommercialFeature>([]),
-  pro: new Set<CommercialFeature>([
-    "advanced-permissions",
-    "encrypt-features-endpoint",
-    "schedule-feature-flag",
-    "override-metrics",
-    "regression-adjustment",
-    "sequential-testing",
-    "visual-editor",
-    "archetypes",
-    "simulate",
-    "cloud-proxy",
-    "hash-secure-attributes",
-    "livechat",
-    "remote-evaluation",
-    "sticky-bucketing",
-    "code-references",
-    "prerequisites",
-    "redirects",
-    "multiple-sdk-webhooks",
-    "quantile-metrics",
-    "retention-metrics",
-    "metric-populations",
-    "multi-armed-bandits",
-    "historical-power",
-    "decision-framework",
-    "safe-rollout",
-    "unlimited-managed-warehouse-usage",
-    "saveSqlExplorerQueries",
-    "precomputed-dimensions",
-    "product-analytics-dashboards",
-  ]),
-  pro_sso: new Set<CommercialFeature>([
-    "sso",
-    "advanced-permissions",
-    "encrypt-features-endpoint",
-    "schedule-feature-flag",
-    "override-metrics",
-    "regression-adjustment",
-    "sequential-testing",
-    "visual-editor",
-    "archetypes",
-    "simulate",
-    "cloud-proxy",
-    "hash-secure-attributes",
-    "livechat",
-    "remote-evaluation",
-    "sticky-bucketing",
-    "code-references",
-    "prerequisites",
-    "redirects",
-    "multiple-sdk-webhooks",
-    "quantile-metrics",
-    "retention-metrics",
-    "metric-populations",
-    "multi-armed-bandits",
-    "historical-power",
-    "decision-framework",
-    "safe-rollout",
-    "unlimited-managed-warehouse-usage",
-    "saveSqlExplorerQueries",
-    "precomputed-dimensions",
-    "product-analytics-dashboards",
-  ]),
-  enterprise: new Set<CommercialFeature>([
-    "ai-suggestions",
-    "scim",
-    "sso",
-    "advanced-permissions",
-    "audit-logging",
-    "encrypt-features-endpoint",
-    "schedule-feature-flag",
-    "custom-metadata",
-    "override-metrics",
-    "regression-adjustment",
-    "post-stratification",
-    "sequential-testing",
-    "pipeline-mode",
-    "multi-metric-queries",
-    "visual-editor",
-    "archetypes",
-    "simulate",
-    "cloud-proxy",
-    "hash-secure-attributes",
-    "json-validation",
-    "livechat",
-    "remote-evaluation",
-    "multi-org",
-    "teams",
-    "custom-launch-checklist",
-    "no-access-role",
-    "sticky-bucketing",
-    "require-approvals",
-    "code-references",
-    "prerequisites",
-    "prerequisite-targeting",
-    "redirects",
-    "multiple-sdk-webhooks",
-    "quantile-metrics",
-    "retention-metrics",
-    "custom-roles",
-    "custom-markdown",
-    "experiment-impact",
-    "metric-populations",
-    "large-saved-groups",
-    "multi-armed-bandits",
-    "metric-groups",
-    "environment-inheritance",
-    "templates",
-    "historical-power",
-    "decision-framework",
-    "safe-rollout",
-    "unlimited-managed-warehouse-usage",
-    "require-project-for-features-setting",
-    "holdouts",
-    "saveSqlExplorerQueries",
-    "metric-effects",
-    "metric-correlations",
-    "dashboards",
-    "precomputed-dimensions",
-    "custom-hooks",
-    "metric-slices",
-    "manage-official-resources",
-    "product-analytics-dashboards",
-    "share-product-analytics-dashboards",
-    "incremental-refresh",
-  ]),
+  pro: new Set<CommercialFeature>(commercialFeaturesPro),
+  pro_sso: new Set<CommercialFeature>(commercialFeaturesProSso),
+  enterprise: new Set<CommercialFeature>(commercialFeaturesEnterprise),
 };
 
 if (stringToBoolean(process.env.IS_CLOUD)) {

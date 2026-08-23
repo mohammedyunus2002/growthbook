@@ -1,13 +1,14 @@
 import { forwardRef, useEffect, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { IconButton } from "@radix-ui/themes";
+import { BsThreeDotsVertical } from "react-icons/bs";
 import { FaArrowsAlt } from "react-icons/fa";
 import {
   ExperimentValue,
   FeatureInterface,
   FeatureValueType,
 } from "shared/types/feature";
-import clsx from "clsx";
 import {
   decimalToPercent,
   distributeWeights,
@@ -18,10 +19,9 @@ import {
   getVariationColor,
   getVariationDefaultName,
 } from "@/services/features";
-import MoreMenu from "@/components/Dropdown/MoreMenu";
 import Field from "@/components/Forms/Field";
 import { FIVE_LINES_HEIGHT } from "@/components/Forms/CodeTextArea";
-import Tooltip from "@/components/Tooltip/Tooltip";
+import { DropdownMenu, DropdownMenuItem } from "@/ui/DropdownMenu";
 import FeatureValueField from "./FeatureValueField";
 import styles from "./VariationsInput.module.scss";
 
@@ -47,6 +47,11 @@ interface SortableProps {
   dragging?: boolean;
   className?: string;
   onlySafeToEditVariationMetadata?: boolean;
+  // Auto-focus this variation's Name field on mount.
+  autoFocusName?: boolean;
+  // JSON features only. Renders the value as a sparse patch (merged onto the
+  // feature default) in the value editor.
+  sparse?: boolean;
 }
 
 type VariationProps = SortableProps &
@@ -74,6 +79,8 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
       showDescription,
       dragging,
       className = "",
+      autoFocusName,
+      sparse,
       ...props
     },
     ref,
@@ -122,7 +129,7 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
                 backgroundColor: getVariationColor(i, true),
               }}
             />
-            {i}
+            <span style={{ position: "relative", top: 6 }}>{i}</span>
           </td>
         )}
         {!hideValueField && (
@@ -149,6 +156,7 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
                 useCodeInput={true}
                 showFullscreenButton={true}
                 codeInputDefaultHeight={FIVE_LINES_HEIGHT}
+                sparse={sparse}
               />
             ) : (
               <>{variation.value}</>
@@ -158,6 +166,8 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
         <td key={`${variation.id}__${i}__2`}>
           {setVariations ? (
             <Field
+              size="legacy"
+              autoFocus={autoFocusName}
               placeholder={`${getVariationDefaultName(
                 variation,
                 valueType ?? "string",
@@ -173,13 +183,16 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
               }}
             />
           ) : (
-            <strong>{variation.name || ""}</strong>
+            <strong style={{ position: "relative", top: 6 }}>
+              {variation.name || ""}
+            </strong>
           )}
         </td>
         {showDescription && (
           <td key={`${variation.id}__${i}__3`}>
             {setVariations ? (
               <Field
+                size="legacy"
                 value={variation.description || ""}
                 onChange={(e) => {
                   const newVariations = [...variations];
@@ -193,7 +206,9 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
                 minRows={1}
               />
             ) : (
-              <span>{variation.description || ""}</span>
+              <span style={{ position: "relative", top: 6 }}>
+                {variation.description || ""}
+              </span>
             )}
           </td>
         )}
@@ -210,6 +225,7 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
                       className={`position-relative ${styles.percentInputWrap}`}
                     >
                       <Field
+                        size="legacy"
                         id={`${variation.id}__${i}__3__input`}
                         style={{ width: 95 }}
                         value={val}
@@ -232,7 +248,9 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
                   </div>
                 ) : (
                   <div className="col d-flex flex-row">
-                    {decimalToPercent(weights[i])}%
+                    <span style={{ position: "relative", top: 6 }}>
+                      {decimalToPercent(weights[i])}%
+                    </span>
                   </div>
                 )}
               </>
@@ -241,44 +259,56 @@ export const VariationRow = forwardRef<HTMLTableRowElement, VariationProps>(
               setVariations &&
               !onlySafeToEditVariationMetadata && (
                 <div {...handle} title="Drag and drop to re-order rules">
-                  <FaArrowsAlt />
+                  <FaArrowsAlt style={{ position: "relative", top: 4 }} />
                 </div>
               )}
             {setVariations && !onlySafeToEditVariationMetadata && (
-              <div className="col-auto">
-                <MoreMenu zIndex={1000000}>
-                  <Tooltip
-                    body="Experiments must have at least two variations"
-                    shouldDisplay={variations.length <= 2}
-                  >
-                    <button
-                      disabled={variations.length <= 2}
-                      className={clsx(
-                        "dropdown-item",
-                        variations.length > 2 && "text-danger",
-                      )}
-                      onClick={(e) => {
-                        e.preventDefault();
-
-                        const newValues = [...variations];
-                        newValues.splice(i, 1);
-
-                        const newWeights = distributeWeights(
-                          newValues.map((v) => v.weight),
-                          customSplit,
-                        );
-
-                        newValues.forEach((v, j) => {
-                          v.weight = newWeights[j] || 0;
-                        });
-                        setVariations(newValues);
-                      }}
-                      type="button"
+              <div
+                className="col-auto"
+                style={{ position: "relative", top: 4 }}
+              >
+                <DropdownMenu
+                  trigger={
+                    <IconButton
+                      variant="ghost"
+                      color="gray"
+                      radius="full"
+                      size="2"
+                      highContrast
+                      style={{ margin: 0 }}
                     >
-                      Remove
-                    </button>
-                  </Tooltip>
-                </MoreMenu>
+                      <BsThreeDotsVertical size={18} />
+                    </IconButton>
+                  }
+                  menuPlacement="end"
+                  variant="soft"
+                >
+                  <DropdownMenuItem
+                    disabled={variations.length <= 2}
+                    color={variations.length > 2 ? "red" : undefined}
+                    tooltip={
+                      variations.length <= 2
+                        ? "Experiments must have at least two variations"
+                        : undefined
+                    }
+                    onClick={() => {
+                      const newValues = [...variations];
+                      newValues.splice(i, 1);
+
+                      const newWeights = distributeWeights(
+                        newValues.map((v) => v.weight),
+                        customSplit,
+                      );
+
+                      newValues.forEach((v, j) => {
+                        v.weight = newWeights[j] || 0;
+                      });
+                      setVariations(newValues);
+                    }}
+                  >
+                    Remove
+                  </DropdownMenuItem>
+                </DropdownMenu>
               </div>
             )}
           </div>

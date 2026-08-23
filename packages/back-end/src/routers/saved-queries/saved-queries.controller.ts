@@ -14,7 +14,6 @@ import {
   Column,
 } from "shared/types/integrations";
 import { DataSourceInterface } from "shared/types/datasource";
-import { logger } from "back-end/src/util/logger";
 import { AuthRequest } from "back-end/src/types/AuthRequest";
 import {
   getAISettingsForOrg,
@@ -24,11 +23,9 @@ import { getDataSourceById } from "back-end/src/models/DataSourceModel";
 import { orgHasPremiumFeature } from "back-end/src/enterprise";
 import { runFreeFormQuery } from "back-end/src/services/datasource";
 import {
-  secondsUntilAICanBeUsedAgain,
-  simpleCompletion,
+  secondsUntilAICanBeUsedAgainForPrompt,
   parsePrompt,
-  supportsJSONSchema,
-} from "back-end/src/enterprise/services/openai";
+} from "back-end/src/enterprise/services/ai";
 import { getInformationSchemaByDatasourceId } from "back-end/src/models/InformationSchemaModel";
 import {
   createInformationSchemaTable,
@@ -37,6 +34,7 @@ import {
 import { fetchTableData } from "back-end/src/services/informationSchema";
 import { ReqContext } from "back-end/types/request";
 import { ApiReqContext } from "back-end/types/api";
+import { IS_CLOUD } from "back-end/src/util/secrets";
 
 /**
  * Ensures all dataVizConfig items have IDs. Adds IDs to any items that don't have them.
@@ -138,7 +136,9 @@ export async function postSavedQuery(
   const context = getContextFromReq(req);
 
   if (!orgHasPremiumFeature(context.org, "saveSqlExplorerQueries")) {
-    throw new Error("Your organization's plan does not support saving queries");
+    context.throwPlanDoesNotAllowError(
+      "Your organization's plan does not support saving queries",
+    );
   }
 
   const datasource = await getDataSourceById(context, datasourceId);
@@ -170,17 +170,22 @@ export async function putSavedQuery(
   const context = getContextFromReq(req);
 
   if (!orgHasPremiumFeature(context.org, "saveSqlExplorerQueries")) {
-    throw new Error("Your organization's plan does not support saving queries");
+    context.throwPlanDoesNotAllowError(
+      "Your organization's plan does not support saving queries",
+    );
   }
 
+  // Only include fields the caller actually sent — passing `undefined` would
+  // clear `dataVizConfig` (it's optional) and no-op `dateLastRan` (required),
+  // neither of which is intended for a partial update that omits them.
   const updateData = {
     ...req.body,
-    dateLastRan: req.body.dateLastRan
-      ? getValidDate(req.body.dateLastRan)
-      : undefined,
-    dataVizConfig: req.body.dataVizConfig
-      ? ensureDataVizIds(req.body.dataVizConfig)
-      : undefined,
+    ...(req.body.dateLastRan
+      ? { dateLastRan: getValidDate(req.body.dateLastRan) }
+      : {}),
+    ...(req.body.dataVizConfig
+      ? { dataVizConfig: ensureDataVizIds(req.body.dataVizConfig) }
+      : {}),
   };
 
   const savedQuery = await context.models.savedQueries.updateById(
@@ -201,7 +206,9 @@ export async function refreshSavedQuery(
   const context = getContextFromReq(req);
 
   if (!orgHasPremiumFeature(context.org, "saveSqlExplorerQueries")) {
-    throw new Error("Your organization's plan does not support saving queries");
+    context.throwPlanDoesNotAllowError(
+      "Your organization's plan does not support saving queries",
+    );
   }
 
   const savedQuery = await context.models.savedQueries.getById(id);
@@ -277,15 +284,20 @@ export async function executeAndSaveQuery(
 }
 
 export async function postGenerateSQL(
-  req: AuthRequest<{ input: string; datasourceId: string }>,
+  req: AuthRequest<{
+    input: string;
+    datasourceId: string;
+    temperature?: number;
+  }>,
   res: Response,
 ) {
-  const { input, datasourceId } = req.body;
+  const { input, datasourceId, temperature: reqTemperature } = req.body;
+  const temperature = reqTemperature ?? 0.1;
   const context = getContextFromReq(req);
-  const { aiEnabled, openAIDefaultModel } = getAISettingsForOrg(context);
+  const { aiEnabled } = await getAISettingsForOrg(context);
 
   if (!orgHasPremiumFeature(context.org, "ai-suggestions")) {
-    throw new Error(
+    context.throwPlanDoesNotAllowError(
       "Your organization's plan does not support generating queries",
     );
   }
@@ -302,7 +314,10 @@ export async function postGenerateSQL(
       message: "Datasource not found",
     });
   }
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgainForPrompt(
+    context,
+    "generate-sql-query",
+  );
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -379,6 +394,9 @@ export async function postGenerateSQL(
 
   let filteredTablesInfo = tablesInfo;
   // if there are more than maxTables, lets do a two part search, asking the AI to give its best guess as to which tables to use.
+  const type = "generate-sql-query";
+  const { prompt: userAdditionalPrompt, overrideModel } =
+    await context.models.aiPrompts.getAIPrompt(type);
   if (filteredTablesInfo.length > maxTables) {
     const instructions =
       "You are a data analyst and SQL expert. " +
@@ -395,7 +413,8 @@ export async function postGenerateSQL(
             `${table?.databaseName}.${table?.schemaName}.${table?.tableName}`,
         )
         .join(", ") +
-      "\nReturn at most 20 FQTN tables. Return only the FQTN without any additional text or explanations.";
+      "\nReturn at most 20 FQTN tables. Return only the FQTN without any additional text or explanations." +
+      (userAdditionalPrompt ? "\n" + userAdditionalPrompt : "");
 
     const zodObjectSchemaTables = z.object({
       table_names: z
@@ -405,71 +424,41 @@ export async function postGenerateSQL(
         ),
     });
     try {
-      // only certain models support json_schema:
-      if (supportsJSONSchema(openAIDefaultModel)) {
-        const aiResultsTables = await parsePrompt({
-          context,
-          instructions,
-          prompt: input,
-          type: "generate-sql-query",
-          model: "gpt-4o-mini",
-          isDefaultPrompt: true,
-          zodObjectSchema: zodObjectSchemaTables,
-          temperature: 0.1,
+      const aiResultsTables = await parsePrompt({
+        context,
+        instructions,
+        prompt: input,
+        type: "generate-sql-query",
+        overrideModel,
+        isDefaultPrompt: true,
+        zodObjectSchema: zodObjectSchemaTables,
+        temperature,
+      });
+
+      if (!aiResultsTables || typeof aiResultsTables.table_names !== "object") {
+        return res.status(400).json({
+          status: 400,
+          message: "AI did not return the expected list of tables",
         });
-
-        if (
-          !aiResultsTables ||
-          typeof aiResultsTables.table_names !== "object"
-        ) {
-          return res.status(400).json({
-            status: 400,
-            message: "AI did not return the expected list of tables",
-          });
-        }
-        const tableNames = Array.isArray(aiResultsTables.table_names)
-          ? aiResultsTables.table_names
-              .map((name) => name.trim())
-              .filter((name) => name)
-              .slice(0, 20)
-          : [];
-
-        // filter the tablesInfo to only include the ones that are in the AI response:
-        filteredTablesInfo = tablesInfo.filter((table) =>
-          tableNames.includes(
-            `${table?.databaseName}.${table?.schemaName}.${table?.tableName}`,
-          ),
-        );
-      } else {
-        // fall back to simple completion if the model does not support json_schema
-        const aiResults = await simpleCompletion({
-          context,
-          instructions:
-            instructions +
-            "\nReturn only the FQTN, separated by commas, without any additional text or explanations.",
-          prompt: input,
-          type: "generate-sql-query",
-          isDefaultPrompt: true,
-          temperature: 0.1,
-        });
-
-        const tableNames = aiResults
-          .split(",")
-          .map((name) => name.trim())
-          .filter((name) => name);
-
-        // filter the tablesInfo to only include the ones that are in the AI response:
-        filteredTablesInfo = tablesInfo.filter((table) =>
-          tableNames.includes(
-            `${table?.databaseName}.${table?.schemaName}.${table?.tableName}`,
-          ),
-        );
       }
+      const tableNames = Array.isArray(aiResultsTables.table_names)
+        ? aiResultsTables.table_names
+            .map((name) => name.trim())
+            .filter((name) => name)
+            .slice(0, 20)
+        : [];
+
+      // filter the tablesInfo to only include the ones that are in the AI response:
+      filteredTablesInfo = tablesInfo.filter((table) =>
+        tableNames.includes(
+          `${table?.databaseName}.${table?.schemaName}.${table?.tableName}`,
+        ),
+      );
     } catch (e) {
-      logger.error(e, "Error generating SQL from AI, first part");
       return res.status(400).json({
         status: 400,
-        message: "AI did not return a valid SQL query",
+        message:
+          "AI did not return a valid SQL query. " + !IS_CLOUD ? e.message : "",
       });
     }
 
@@ -548,9 +537,21 @@ export async function postGenerateSQL(
       "you're asked for a date range, you should use something like: " +
       "\n(_TABLE_SUFFIX BETWEEN 'yyyyMMdd' AND 'yyyyMMdd')" +
       "\nWhere yyyy is the full year, MM is the month, and dd is the day.\n when constructing the query " +
-      "to make sure it's fast and makes use of the sharding. If you use this code, be sure to replace the dates with the correct range.\n";
+      "to make sure it's fast and makes use of the sharding. If you use this code, be sure to replace the dates with the correct range.\n" +
+      "When generating BigQuery SQL, NEVER use TIMESTAMP_SUB or TIMESTAMP_ADD with date parts larger than DAY (such as MONTH, QUARTER, or YEAR), as this will cause an error.\n" +
+      "If you need to subtract months from a TIMESTAMP column, follow this pattern:\n" +
+      "\n" +
+      "    Cast the TIMESTAMP to a DATETIME.\n" +
+      "    Use DATETIME_SUB with the MONTH interval.\n" +
+      "    Cast the result back to a TIMESTAMP if required.\n" +
+      "\n" +
+      "Example Correct Logic:\n" +
+      "CAST(DATETIME_SUB(CAST(my_timestamp AS DATETIME), INTERVAL 1 MONTH) AS TIMESTAMP)";
   }
 
+  if (userAdditionalPrompt) {
+    instructions += "\n" + userAdditionalPrompt;
+  }
   const zodObjectSchema = z.object({
     sql_string: z
       .string()
@@ -559,60 +560,34 @@ export async function postGenerateSQL(
       ),
   });
   try {
-    if (supportsJSONSchema(openAIDefaultModel)) {
-      const aiResults = await parsePrompt({
-        context,
-        instructions,
-        prompt: input,
-        type: "generate-sql-query",
-        isDefaultPrompt: true,
-        zodObjectSchema,
-        temperature: 0.1,
-        model: "gpt-4o-mini",
-      });
+    const aiResults = await parsePrompt({
+      context,
+      instructions,
+      prompt: input,
+      type: "generate-sql-query",
+      isDefaultPrompt: true,
+      zodObjectSchema,
+      temperature,
+      overrideModel,
+    });
 
-      if (!aiResults || typeof aiResults.sql_string !== "string") {
-        return res.status(400).json({
-          status: 400,
-          message: "AI did not return the expected SQL string",
-        });
-      }
-      res.status(200).json({
-        status: 200,
-        data: {
-          sql: aiResults.sql_string,
-        },
-      });
-    } else {
-      // fall back to simple completion:
-      const aiResults = await simpleCompletion({
-        context,
-        instructions:
-          instructions +
-          "\nReturn only the SQL query, without any additional text or explanations.",
-        prompt: input,
-        type: "generate-sql-query",
-        isDefaultPrompt: true,
-        temperature: 0.1,
-      });
-
-      // sometimes, even though we ask it not to, it returns in markdown:
-      const cleanSQL = aiResults.startsWith("```")
-        ? aiResults.replace(/```sql|```/g, "").trim()
-        : aiResults;
-
-      res.status(200).json({
-        status: 200,
-        data: {
-          sql: cleanSQL,
-        },
+    if (!aiResults || typeof aiResults.sql_string !== "string") {
+      return res.status(400).json({
+        status: 400,
+        message: "AI did not return the expected SQL string",
       });
     }
+    res.status(200).json({
+      status: 200,
+      data: {
+        sql: aiResults.sql_string,
+      },
+    });
   } catch (e) {
-    logger.error(e, "Error generating SQL from AI, second part");
     return res.status(400).json({
       status: 400,
-      message: "AI did not return a valid SQL query",
+      message:
+        "AI did not return a valid SQL query. " + (!IS_CLOUD ? e.message : ""),
     });
   }
 }
@@ -644,14 +619,10 @@ async function fetchOrCreateTableSchema({
     throw new Error("no tables found in schema " + tableId);
   }
 
-  const columns: Column[] = tableData.map(
-    (row: { column_name: string; data_type: string }) => {
-      return {
-        columnName: row.column_name,
-        dataType: row.data_type,
-      };
-    },
-  );
+  const columns: Column[] = tableData.map((row) => ({
+    columnName: row.column_name,
+    dataType: row.data_type,
+  }));
 
   // Create the table record in Mongo.
   return await createInformationSchemaTable({

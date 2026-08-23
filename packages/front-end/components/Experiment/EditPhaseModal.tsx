@@ -8,9 +8,10 @@ import { PiCaretDown, PiCaretUp } from "react-icons/pi";
 import { datetime } from "shared/dates";
 import { useAuth } from "@/services/auth";
 import Field from "@/components/Forms/Field";
-import Modal from "@/components/Modal";
 import { validateSavedGroupTargeting } from "@/components/Features/SavedGroupTargetingField";
 import DatePicker from "@/components/DatePicker";
+import ModalStandard from "@/ui/Modal/Patterns/ModalStandard";
+import Callout from "@/ui/Callout";
 
 export interface Props {
   close: () => void;
@@ -48,7 +49,7 @@ export default function EditPhaseModal({
   const isHoldout = experiment.type === "holdout";
 
   return (
-    <Modal
+    <ModalStandard
       trackingEventModalType="edit-phase-modal"
       trackingEventModalSource={source}
       open={true}
@@ -64,9 +65,13 @@ export default function EditPhaseModal({
         mutate();
       })}
       size="lg"
-      bodyClassName="px-4 pt-4"
     >
-      <Field label="Phase Name" {...form.register("name")} required />
+      <Field
+        size="legacy"
+        label="Phase Name"
+        {...form.register("name")}
+        required
+      />
       <DatePicker
         label="Start Time (UTC)"
         date={form.watch("dateStarted")}
@@ -103,6 +108,7 @@ export default function EditPhaseModal({
           </div>
           {form.watch("dateEnded") && (
             <Field
+              size="legacy"
               label="Reason for Stopping"
               textarea
               {...form.register("reason")}
@@ -113,7 +119,7 @@ export default function EditPhaseModal({
       ) : null}
 
       {!isHoldout && !isDraft ? (
-        <div className="alert alert-info mt-4">
+        <Callout status="info" mt="4">
           Trying to change targeting rules, traffic allocation, or start a new
           phase? Use the{" "}
           <a
@@ -127,7 +133,7 @@ export default function EditPhaseModal({
             Make Changes
           </a>{" "}
           button instead.
-        </div>
+        </Callout>
       ) : null}
 
       {!isHoldout ? (
@@ -135,6 +141,7 @@ export default function EditPhaseModal({
           {advancedOptionsOpen && (
             //edit seed
             <Field
+              size="legacy"
               label="Seed"
               type="input"
               {...form.register("seed")}
@@ -158,6 +165,6 @@ export default function EditPhaseModal({
           </span>
         </>
       ) : null}
-    </Modal>
+    </ModalStandard>
   );
 }

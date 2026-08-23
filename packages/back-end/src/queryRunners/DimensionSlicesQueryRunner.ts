@@ -50,13 +50,20 @@ export class DimensionSlicesQueryRunner extends QueryRunner<
       await this.startQuery({
         name: "dimensionSlices",
         query: this.integration.getDimensionSlicesQuery({
-          exposureQueryId: params.exposureQueryId,
+          exposureQuery: {
+            query: exposureQuery?.query ?? "",
+            userIdType: exposureQuery?.userIdType ?? "",
+          },
           dimensions: dimensions,
           lookbackDays: params.lookbackDays,
         }),
         dependencies: [],
-        run: (query, setExternalId) =>
-          this.integration.runDimensionSlicesQuery(query, setExternalId),
+        run: (query, setExternalId, queryMetadata) =>
+          this.integration.runDimensionSlicesQuery(
+            query,
+            setExternalId,
+            queryMetadata,
+          ),
         queryType: "dimensionSlices",
       }),
     ];
